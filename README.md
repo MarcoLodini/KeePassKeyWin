@@ -33,9 +33,42 @@ Deferred to future versions:
 - **`hmac-secret` / `prf` extension.** Used by a handful of advanced password-manager flows. Not required for mainstream passkey login.
 - **Multiple KeePass instances with different vaults.** v1 is single-instance-per-session. A second KeePass process is detected and stays passive.
 
+## Try it on Windows (Phase 0.5)
+
+> Pre-alpha. No MSIX, no Rust sidecar — this validates the crypto, storage,
+> and IPC layers against a real KeePass instance and real Chrome.
+
+See **[`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md)** for the full step-by-step runbook.
+
+Quick start:
+
+```powershell
+# Build and install the plugin into KeePass
+.\scripts\build-plugin.ps1 -KeePassDir "C:\Program Files\KeePass Password Safe 2"
+
+# Run the smoke test (start KeePass and open a .kdbx first)
+.\scripts\smoke-test.ps1
+```
+
 ## Building
 
-Not yet wired up. Build instructions will land alongside Phase 1.
+### Plugin (net48, Windows only)
+
+```powershell
+dotnet build src/PassKee.Plugin -f net48 /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+```
+
+### Harness (net8.0, cross-platform build, Windows execution)
+
+```powershell
+dotnet build src/PassKee.Harness -c Release
+```
+
+### Unit tests (net8.0, Linux/macOS/Windows)
+
+```bash
+dotnet test --nologo
+```
 
 ## License
 

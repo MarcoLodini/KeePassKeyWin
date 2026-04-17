@@ -1,0 +1,221 @@
+# PassKee Windows Validation Runbook
+
+> **v0.1 pre-release — expect churn.** This runbook validates Phase 0.5
+> (crypto + storage + IPC) end-to-end against a real KeePass + real Chrome
+> without any Rust sidecar or MSIX packaging. Treat every step as provisional;
+> the exact commands will stabilise once Phase 1 hardens.
+
+---
+
+## Prerequisites
+
+| Requirement | Minimum |
+|---|---|
+| Windows version | Windows 11 24H2 build **26100.6725** or newer (verify: `winver`) |
+| KeePass | 2.58 or newer — <https://keepass.info/download.html> |
+| .NET Framework | 4.8 (ships with Win11 — confirm via `reg query "HKLM\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" /v Release`) |
+| .NET SDK | 8.0 — <https://dot.net> (`dotnet --version` must show `8.x`) |
+| Chrome or Edge | Any recent stable build |
+| Playwright Chromium | Run once: `dotnet tool install --global Microsoft.Playwright.CLI && playwright install chromium` |
+
+All build and harness commands run in a **PowerShell 7** prompt opened from the repo root.
+
+---
+
+## Step 1 — Build the plugin
+
+```powershell
+# Replace the path if KeePass is installed elsewhere.
+$KeePassDir = "C:\Program Files\KeePass Password Safe 2"
+dotnet build src/PassKee.Plugin -f net48 /p:KeePassDir="$KeePassDir"
+```
+
+Expected: `Build succeeded. 0 Error(s)` and output at
+`src\PassKee.Plugin\bin\Debug\net48\PassKee.dll`.
+
+If you prefer the automated script:
+
+```powershell
+.\scripts\build-plugin.ps1 -KeePassDir $KeePassDir
+# Use -DryRun to preview without copying.
+```
+
+---
+
+## Step 2 — Build the harness
+
+```powershell
+dotnet build src/PassKee.Harness -c Release
+```
+
+Harness binary: `src\PassKee.Harness\bin\Release\net8.0\PassKee.Harness.exe`
+
+---
+
+## Step 3 — Install the plugin into KeePass
+
+Copy `PassKee.dll` and its dependency `Newtonsoft.Json.dll` into the KeePass
+`Plugins\` folder:
+
+```powershell
+.\scripts\build-plugin.ps1 -KeePassDir $KeePassDir
+```
+
+Or manually:
+
+```powershell
+$src    = "src\PassKee.Plugin\bin\Debug\net48"
+$target = "$KeePassDir\Plugins"
+Copy-Item "$src\PassKee.dll"         $target -Force
+Copy-Item "$src\Newtonsoft.Json.dll" $target -Force
+```
+
+> **Architecture must match.** KeePass 2.x ships as 32-bit (x86) by default.
+> `PassKee.Plugin` targets AnyCPU, so it adapts — but if you see a
+> `BadImageFormatException` in the KeePass log, confirm KeePass's
+> bitness with `(Get-Item "$KeePassDir\KeePass.exe").Headers.Machine`.
+
+---
+
+## Step 4 — First-run checks in KeePass
+
+1. Close KeePass if it is running, then start it again.
+2. Open or create a test `.kdbx` file (do **not** use your real vault).
+3. Click **Tools** in the menu bar.
+   - You should see a **PassKee** submenu.
+   - Click **OS compatibility...** — it should report "Your OS meets PassKee requirements."
+4. Check the KeePass status bar (bottom) — it should not show any PassKee error.
+5. Confirm the handshake nonce was written to the registry:
+
+```powershell
+Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce
+```
+
+You should see a 64-character hex string.
+
+---
+
+## Step 5 — Run the smoke test
+
+The `scripts\smoke-test.ps1` script finds the session ID and nonce automatically,
+then calls the harness in `--smoke` mode.
+
+```powershell
+.\scripts\smoke-test.ps1
+```
+
+Or manually:
+
+```powershell
+$sessionId = (Get-Process KeePass -ErrorAction Stop).SessionId
+$nonce     = (Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce).HandshakeNonce
+dotnet run --project src/PassKee.Harness -c Release -- `
+    --pipe "PassKee.$sessionId" `
+    --nonce $nonce `
+    --rp webauthn.io `
+    --smoke
+```
+
+Expected output (exit code 0):
+
+```
+[Harness] Pipe: PassKee.1
+[Harness] Connecting to plugin pipe... OK
+[Harness] Handshake complete.
+[Harness] CDP: localhost:9222
+[Smoke] createPasskey... OK (AbCdEf123456...)
+[Smoke] listCredentials... OK (1 credential(s))
+[Smoke] signAssertion... OK
+[Smoke] deleteCredential... OK
+[Smoke] All checks PASSED.
+```
+
+> The smoke test does **not** open a browser. It talks only to the plugin
+> pipe. CDP is connected but not actively exercised unless you run the
+> browser scenario below.
+
+---
+
+## Step 6 — Browser scenario (webauthn.io)
+
+1. Launch Chrome with remote debugging enabled:
+
+```powershell
+Start-Process chrome "--remote-debugging-port=9222 --no-first-run --no-default-browser-check"
+```
+
+2. Run the harness in interactive mode (pipe + CDP):
+
+```powershell
+$sessionId = (Get-Process KeePass).SessionId
+$nonce     = (Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce).HandshakeNonce
+dotnet run --project src/PassKee.Harness -c Release -- `
+    --nonce $nonce --rp webauthn.io
+```
+
+3. After `Virtual authenticator installed. Ready.` is printed, navigate Chrome
+   to <https://webauthn.io>.
+
+4. Register a passkey:
+   - Enter a username (e.g. `passkee-test-<timestamp>`).
+   - Click **Register**. Chrome's virtual authenticator handles the
+     `navigator.credentials.create()` call via the CDP harness.
+   - In the harness terminal type `create` then press Enter.
+   - Expected: `Created: <credentialId>` printed.
+
+5. Verify the entry in KeePass:
+   - In KeePass, look for a **Passkeys** group under the root.
+   - It should contain one entry titled `webauthn.io / <userName>`.
+
+6. Login with the passkey:
+   - On webauthn.io click **Authenticate**.
+   - In the harness terminal type `sign <credentialId>` then press Enter.
+   - Expected: `Signature OK`.
+
+7. Teardown:
+   - Type `quit` in the harness to disconnect.
+   - In KeePass, select the entry in the Passkeys group and press Delete.
+   - Run `list webauthn.io` in a new harness session to confirm empty.
+
+---
+
+## Step 7 — Verify teardown
+
+```powershell
+# Nonce should be cleared after the first successful handshake.
+$nonce = (Get-ItemProperty HKCU:\Software\PassKee -ErrorAction SilentlyContinue).HandshakeNonce
+if ($null -eq $nonce) { Write-Host "Nonce cleared — OK" } else { Write-Warning "Nonce still present" }
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| PassKee menu missing from Tools | Plugin DLL not copied / wrong path | Re-run `build-plugin.ps1`; check KeePass log (`View → Show Log`) |
+| `BadImageFormatException` in KeePass log | Architecture mismatch | Check KeePass bitness; PassKee.dll is AnyCPU and should adapt automatically |
+| `[Harness] ERROR connecting to plugin` / timeout | KeePass not running, no `.kdbx` open, or plugin failed to start | Open a `.kdbx` in KeePass; check Tools → PassKee → OS compatibility |
+| `Pipe busy` / `another instance is active` | Second KeePass process holds the pipe | Close the duplicate KeePass window |
+| `client_unauthorized` | Handshake nonce expired (5 min TTL) or already consumed | Restart KeePass to regenerate nonce; read it again from registry |
+| `vault_locked` | No `.kdbx` open in KeePass | Open a database in KeePass before running the harness |
+| webauthn.io rejects attestation | RP policy blocks `none` attestation or zero AAGUID | Expected for enterprise RPs with strict attestation policies; webauthn.io should accept none attestation |
+| `playwright install` fails | Playwright CLI not installed globally | `dotnet tool install --global Microsoft.Playwright.CLI` first |
+| Chrome CDP connection refused | Chrome not started with `--remote-debugging-port=9222` | Re-launch Chrome with the flag; confirm with `Invoke-WebRequest http://localhost:9222/json` |
+
+---
+
+## What this validates
+
+- ECDsa P-256 key generation and PKCS#8 storage in KeePass.
+- CTAP2-canonical CBOR encoding of `authData` and `COSE_Key`.
+- `authenticatorData` layout (rpIdHash + flags + signCount + AAGUID + credId + COSE_Key).
+- IEEE P1363 → DER signature conversion.
+- JSON-RPC 2.0 framing over named pipe.
+- HKCU nonce handshake.
+- PwEntry ↔ `PasskeyRecord` round-trip in the "Passkeys" group.
+
+It does **not** yet validate:
+- Windows Plug-in Authenticator registration (Rust sidecar, Phase 2).
+- MSIX packaging or code signing.
+- RS256 algorithm support.

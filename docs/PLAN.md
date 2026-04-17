@@ -27,8 +27,9 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
   - `KeePassDir` env var / MSBuild property selects real `KeePass.exe` vs stub; set `KeePassDir="C:\Program Files\KeePass Password Safe 2"` for production builds, unset for Linux/CI.
 - [ ] Plugin: JSON-RPC 2.0 server over named pipe; method dispatch
 - [ ] Plugin: OS version gate — refuse activation outside Win11 24H2 26100.6725+
-- [ ] Harness: standalone C# app that drives Chrome DevTools virtual authenticator via the DevTools Protocol, routing CTAP2 calls to the plugin's JSON-RPC pipe
+- [x] Harness: standalone C# app that drives Chrome DevTools virtual authenticator via the DevTools Protocol, routing CTAP2 calls to the plugin's JSON-RPC pipe
 - [ ] E2E: register + authenticate on [webauthn.io](https://webauthn.io) via the harness through the plugin
+- [x] Windows validation runbook (`docs/WINDOWS_VALIDATION.md`) + deploy/smoke scripts (`scripts/`)
 
 ## Phase 1 — Plugin skeleton (production-grade)
 
@@ -42,12 +43,31 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 ## Phase 2 — Provider skeleton (self-signed MSIX, dev machine only)
 
-- [ ] Generate `IPluginAuthenticator` bindings from Windows SDK via `windows-bindgen`
-- [ ] COM server stub — vtable registration, class factory
-- [ ] `Package.appxmanifest` with `windows.comServer` extension
+### Phase 2a — Rust IPC client + CTAP2 types ✓
+
+- [x] `src/PassKee.Provider/src/ipc/mod.rs` — JSON-RPC 2.0 pipe client, exponential backoff, `VaultLocked`/`NoCredentials`/`ClientUnauthorized` error mapping
+- [x] `src/PassKee.Provider/src/ctap/mod.rs` — typed params/results for all five RPC methods, `rp_id_hash`, `make_credential_to_rpc`
+- [x] `src/main.rs` CLI — `smoke` and `make-credential` subcommands (create→list→sign→delete flow)
+- [x] 23 unit tests passing on Linux (IPC round-trip via Unix socket, CTAP serde, error mapping)
+
+### Phase 2b — COM bindings + MSIX manifest ✓ (Linux build; pending Windows)
+
+- [x] `src/com/types.rs` — `#[repr(C)]` ABI-compatible types: `WebauthNPluginOperationRequest/Response`, `WebauthNPluginCancelOperationRequest`, `PluginLockStatus`, `Guid`
+- [x] `src/com/server.rs` — hand-rolled `IPluginAuthenticatorVtbl` vtable; `IPluginAuthenticatorImpl` with atomic ref-count + `Arc<Mutex<State>>`; `make_credential`, `get_assertion`, `cancel_operation`, `get_lock_status` dispatch
+- [x] `src/com/dll.rs` — `ClassFactory` + `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer` exports
+- [x] `appx/Package.appxmanifest` — `MinVersion="10.0.26100.0"`, `rescap:runFullTrust`, `com:InProcessServer` with CLSID `d26bcf6f-…`, STA threading model
+- [x] `.cargo/config.toml` — `lld-link` linker + xwin SDK paths for `x86_64-pc-windows-msvc` cross-compilation
+- [x] `idl/pluginauthenticator.h` — reference header transcribed from Microsoft WebAuthn SDK
+
+**Pending Windows** (require a Windows 11 24H2 machine):
+- [ ] `cargo xwin build --target x86_64-pc-windows-msvc --release` — verify DLL links cleanly against real Windows SDK
+- [ ] `makeappx pack` + `signtool sign` — produce installable `.msix` with self-signed certificate
+- [ ] Sideload MSIX → verify COM registration activates (`DllGetClassObject` called by WebAuthn host)
+- [ ] Verify Settings → Accounts → Passkeys → Advanced options lists the provider
+- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake)
+- [ ] Runtime vtable validation: attach debugger, confirm `IPluginAuthenticator` method slots match production offsets
+
 - [ ] `WebAuthNPluginAddAuthenticator` call on first activation
-- [ ] Named-pipe client with retry/backoff + handshake
-- [ ] Verify appearance in Settings → Accounts → Passkeys → Advanced options
 
 ## Phase 3 — End-to-end `MakeCredential`
 

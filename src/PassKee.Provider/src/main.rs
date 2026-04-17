@@ -4,11 +4,9 @@
 //!   smoke            -- connect, handshake, print hello response.
 //!   make-credential  -- full makeCredential flow via the plugin pipe.
 
-mod ctap;
-mod ipc;
-
-use ipc::PipeClient;
-use ctap::{
+use passkee_provider::ipc::{self, PipeClient};
+use passkee_provider::ctap::{
+    self as ctap,
     CreatePasskeyParams, DeleteCredentialParams, ListCredentialsParams,
     SignAssertionParams, rp_id_hash,
 };
@@ -176,11 +174,43 @@ fn sha2_hash(data: &[u8]) -> [u8; 32] {
 #[cfg(windows)]
 fn read_nonce_from_registry() -> Option<String> {
     // HKCU\Software\PassKee\HandshakeNonce — written by the plugin on Initialize().
-    use std::ffi::OsString;
-    use winreg::enums::*;
-    use winreg::RegKey;
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let key = hkcu.open_subkey(r"Software\PassKee").ok()?;
-    let val: String = key.get_value("HandshakeNonce").ok()?;
-    Some(val)
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ,
+    };
+    use windows::core::PCWSTR;
+
+    let sub_key: Vec<u16> = "Software\\PassKee\0".encode_utf16().collect();
+    let value_name: Vec<u16> = "HandshakeNonce\0".encode_utf16().collect();
+    let mut buf = vec![0u16; 256];
+    let mut buf_bytes = (buf.len() * 2) as u32;
+    let mut hkey = windows::Win32::System::Registry::HKEY::default();
+
+    let rc = unsafe {
+        windows::Win32::System::Registry::RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sub_key.as_ptr()),
+            Some(0),
+            windows::Win32::System::Registry::KEY_READ,
+            &mut hkey,
+        )
+    };
+    if rc.is_err() { return None; }
+
+    let rc = unsafe {
+        RegGetValueW(
+            hkey,
+            PCWSTR::null(),
+            PCWSTR(value_name.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut buf_bytes),
+        )
+    };
+    let _ = unsafe { RegCloseKey(hkey) };
+    if rc.is_err() { return None; }
+
+    // buf_bytes includes the null terminator; convert to String.
+    let len = (buf_bytes / 2).saturating_sub(1) as usize;
+    Some(String::from_utf16_lossy(&buf[..len]))
 }

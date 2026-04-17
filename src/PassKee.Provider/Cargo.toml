@@ -7,9 +7,17 @@ license = "GPL-3.0-or-later"
 description = "PassKee Windows Passkey Provider sidecar — MSIX-packaged IPluginAuthenticator COM server bridging Windows WebAuthn to the PassKee KeePass 2.x plugin over IPC."
 publish = false
 
+# CLI binary (smoke-test / make-credential subcommands).
 [[bin]]
 name = "passkee-provider"
 path = "src/main.rs"
+
+# COM in-process server DLL — Windows only.
+# Built as a cdylib so DllGetClassObject / DllCanUnloadNow are exported.
+[lib]
+name = "passkee_provider"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
@@ -24,10 +32,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 base64 = "0.22"
 
-# Windows COM/MSIX — uncomment when Phase 2b (Windows build) begins.
-# [target.'cfg(windows)'.dependencies]
-# windows       = { version = "0.61", features = [] }
-# windows-core  = "0.61"
+# Phase 2b: windows-rs COM bindings — Windows only.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_RemoteDesktop",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = "s"

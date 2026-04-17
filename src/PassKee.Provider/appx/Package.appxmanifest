@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PassKee Provider — MSIX Package Manifest
+
+  Placeholders to fill in before signing:
+    PASSKEE_PUBLISHER_PLACEHOLDER  — CN=<your cert subject>, e.g. CN=Marco Lodini, O=PassKee, C=US
+    PASSKEE_VERSION_PLACEHOLDER    — package version, e.g. 0.0.1.0  (must be Major.Minor.Build.Revision)
+
+  CLSIDs:
+    IPluginAuthenticator IID/CLSID: {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+    This is the Microsoft-defined interface IID; it doubles as our COM server CLSID per the
+    Windows passkey plugin contract.
+
+  Threading model: STA (singleThreadedApartment), required by IPluginAuthenticator.
+
+  References:
+    https://learn.microsoft.com/en-us/windows/win32/webauthn/webauthn-portal
+    https://github.com/microsoft/webauthn/blob/master/pluginauthenticator.h
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap com rescap">
+
+  <!-- ── Identity ─────────────────────────────────────────────────────────── -->
+  <Identity
+    Name="PassKee.Provider"
+    Publisher="PASSKEE_PUBLISHER_PLACEHOLDER"
+    Version="PASSKEE_VERSION_PLACEHOLDER"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>PassKee Passkey Provider</DisplayName>
+    <PublisherDisplayName>PassKee Contributors</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>FIDO2 / WebAuthn passkey provider bridge for the PassKee KeePass 2.x plugin.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 11 24H2 build 26100 = platform version 10.0.26100.0 -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.26100.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <!-- ── Capabilities ──────────────────────────────────────────────────────── -->
+  <Capabilities>
+    <!--
+      runFullTrust: required for COM in-process servers and named-pipe communication
+      with KeePass (a full-trust Win32 application).
+    -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <!-- ── Applications ──────────────────────────────────────────────────────── -->
+  <Applications>
+    <!--
+      The provider has no visible UI — it runs purely as a COM in-proc server.
+      We still need an <Application> entry so the manifest is valid.
+      The Executable here is the CLI helper; the actual loaded DLL is the cdylib.
+    -->
+    <Application Id="PassKeeProvider" Executable="passkee-provider.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="PassKee Provider"
+        Description="PassKee passkey provider — runs as a COM in-process server, no UI."
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        BackgroundColor="transparent" />
+
+      <Extensions>
+        <!--
+          COM in-process server registration.
+
+          CLSID  = IPluginAuthenticator IID = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+          The Windows WebAuthn API resolves the COM server by this CLSID.
+
+          ThreadingModel: STA — matches the IPluginAuthenticator contract.
+          See: https://learn.microsoft.com/en-us/windows/win32/com/single-threaded-apartments
+        -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:InProcessServer>
+              <com:Path>passkee_provider.dll</com:Path>
+              <com:Class
+                Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
+                ThreadingModel="STA" />
+            </com:InProcessServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+</Package>

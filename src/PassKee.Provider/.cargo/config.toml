@@ -1,0 +1,18 @@
+# Cross-compilation configuration for PassKee Provider.
+#
+# Windows MSVC target via xwin (LLVM + Windows SDK stubs):
+#   cargo build --target x86_64-pc-windows-msvc --release
+#
+# See README.md for full setup instructions.
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+rustflags = [
+    "-Lnative=/opt/xwin/crt/lib/x86_64",
+    "-Lnative=/opt/xwin/sdk/lib/um/x86_64",
+    "-Lnative=/opt/xwin/sdk/lib/ucrt/x86_64",
+]
+
+# Alternative: GNU toolchain via mingw-w64 (no MSVC SDK required, limited compat).
+# [target.x86_64-pc-windows-gnu]
+# linker = "x86_64-w64-mingw32-gcc"
