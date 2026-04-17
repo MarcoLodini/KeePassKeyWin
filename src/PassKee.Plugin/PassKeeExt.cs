@@ -2,8 +2,12 @@ using System;
 using System.Diagnostics;
 using KeePass.Plugins;
 using PassKee.Core.Ipc;
+using PassKee.Core.Platform;
 using PassKee.Plugin.Ipc;
 using PassKee.Plugin.Storage;
+#if NET48
+using PassKee.Plugin.UI;
+#endif
 
 namespace PassKee;
 
@@ -13,21 +17,36 @@ public sealed class PassKeeExt : KeePass.Plugins.Plugin
     private IPluginHost? _host;
     private PipeServer? _pipeServer;
     private RegistryNonceStore? _nonceStore;
+#if NET48
+    private MenuEntry? _menuEntry;
+    private PasskeyEntryDecorator? _decorator;
+#endif
 
     public override bool Initialize(IPluginHost host)
     {
         _host = host;
 
-        if (!IsWin1124H2OrLater())
+        var (osOk, osReason) = OsVersionCheck.IsSupportedWindows();
+        if (!osOk)
         {
-            host.MainWindow.SetStatusEx("PassKee: requires Windows 11 24H2 (build 26100.6725+). Plugin disabled.");
-            return false;
+            // Log but still return true — don't prevent KeePass from loading.
+            // Just skip pipe server and UI wiring.
+            host.MainWindow.SetStatusEx($"PassKee disabled: {osReason}");
+            return true;
         }
+
+#if NET48
+        _menuEntry = new MenuEntry(host);
+        _menuEntry.Install();
+
+        _decorator = new PasskeyEntryDecorator(host);
+        _decorator.Install();
 
         _nonceStore = new RegistryNonceStore();
         _nonceStore.Initialize();
+#endif
 
-        var dispatcher = new RpcDispatcher(_nonceStore);
+        var dispatcher = new RpcDispatcher(_nonceStore!);
         var vaultStore = new KeePassPasskeyStore(host);
         var vaultHandler = new VaultHandler(vaultStore);
         dispatcher.VaultHandler = vaultHandler.Handle;
@@ -48,22 +67,17 @@ public sealed class PassKeeExt : KeePass.Plugins.Plugin
 
     public override void Terminate()
     {
+#if NET48
+        _menuEntry?.Uninstall();
+        _menuEntry = null;
+        _decorator?.Dispose();
+        _decorator = null;
+#endif
+
         _pipeServer?.Stop();
         _pipeServer = null;
         _nonceStore?.Clear();
         _nonceStore = null;
         _host = null;
-    }
-
-    // Windows 11 24H2 build 26100.6725 or later is required for IPluginAuthenticator.
-    private static bool IsWin1124H2OrLater()
-    {
-#if WINDOWS
-        var v = Environment.OSVersion.Version;
-        // Build 26100 corresponds to 24H2; KB5068861 pushes revision to ≥6725.
-        return v.Major >= 10 && v.Build >= 26100;
-#else
-        return false;
-#endif
     }
 }

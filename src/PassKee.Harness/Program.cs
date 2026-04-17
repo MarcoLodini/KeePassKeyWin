@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using PassKee.Harness;
 using PassKee.Harness.Cdp;
 using PassKee.Harness.Pipe;
 
@@ -218,7 +219,7 @@ static async Task<int> RunSmokeTestAsync(
         Console.Write("[Smoke] deleteCredential... ");
         var delResult = await pipe.CallAsync("passkee.deleteCredential",
             new Newtonsoft.Json.Linq.JObject { ["credentialId"] = credId }, ct);
-        var deleted = delResult?["deleted"]?.Value<bool>() ?? false;
+        var deleted = delResult?["deleted"] is Newtonsoft.Json.Linq.JValue jv && (bool)jv;
         if (!deleted) throw new Exception("deleteCredential returned false.");
         Console.WriteLine("OK");
 

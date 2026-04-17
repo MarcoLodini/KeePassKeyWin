@@ -32,11 +32,13 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 ## Phase 1 — Plugin skeleton (production-grade)
 
+- [x] OS version gate via `RtlGetVersion` P/Invoke (`OsVersionCheck`); graceful degradation (log + return true, skip pipe)
 - [ ] Single-instance pipe (`\\.\pipe\PassKee.<sessionId>`); second-instance detection + warning
 - [ ] Handshake: client package family + HKCU nonce verification
 - [ ] Full JSON-RPC method surface (hello, createPasskey, listCredentials, signAssertion, deleteCredential, enumerateForSync)
-- [ ] Entry editor integration (view + delete passkeys from inside KeePass)
+- [x] KeePass Tools menu entry (About, Show Passkeys folder, OS compatibility) + entry editor read-only passkey tab (`MenuEntry`, `PasskeyEntryDecorator`, `AboutDialog`)
 - [ ] Unit test suite lifted from Phase 0.5
+- [x] `OsVersionCheckTests` (9 tests, pure-logic, runs on Linux net8.0)
 
 ## Phase 2 — Provider skeleton (self-signed MSIX, dev machine only)
 

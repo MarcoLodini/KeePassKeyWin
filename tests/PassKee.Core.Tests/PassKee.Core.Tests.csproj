@@ -21,7 +21,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PassKee.Core\PassKee.Core.csproj" />
-    <ProjectReference Include="..\..\src\PassKee.Plugin\PassKee.Plugin.csproj" />
+    <!-- KeePassStub provides KeePass.*, KeePassLib types for storage tests on Linux/CI -->
+    <ProjectReference Include="..\..\tests\TestSupport\KeePassStub\KeePassStub.csproj" />
+  </ItemGroup>
+
+  <!-- Include PassKee.Plugin source files that the storage tests exercise directly -->
+  <ItemGroup>
+    <Compile Include="..\..\src\PassKee.Plugin\Storage\KeePassPasskeyStore.cs" />
   </ItemGroup>
 
 </Project>

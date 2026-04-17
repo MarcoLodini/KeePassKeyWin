@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net48;net8.0</TargetFrameworks>
+    <TargetFramework>net48</TargetFramework>
     <AssemblyName>PassKee</AssemblyName>
     <RootNamespace>PassKee</RootNamespace>
     <OutputType>Library</OutputType>
@@ -29,6 +29,12 @@
 
   <ItemGroup Condition="'$(KeePassDir)' == ''">
     <ProjectReference Include="..\..\tests\TestSupport\KeePassStub\KeePassStub.csproj" />
+  </ItemGroup>
+
+  <!-- WinForms: required for UI/MenuEntry, UI/AboutDialog, UI/PasskeyEntryDecorator -->
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
   </ItemGroup>
 
   <ItemGroup>

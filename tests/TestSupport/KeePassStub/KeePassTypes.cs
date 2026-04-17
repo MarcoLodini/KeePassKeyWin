@@ -104,11 +104,10 @@ namespace KeePassLib
     }
 }
 
-// Stub MainForm — only the members PassKeeExt actually calls.
-// Does not inherit from Form to avoid WinForms dependency in the stub.
+// Stub MainForm — cross-platform members. WinForms members are in KeePassUiTypes.cs (net48 only).
 namespace KeePass
 {
-    public class MainForm
+    public partial class MainForm
     {
         public void SetStatusEx(string str) { }
     }
