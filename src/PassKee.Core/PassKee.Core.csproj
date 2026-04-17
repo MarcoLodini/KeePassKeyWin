@@ -7,6 +7,8 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <Deterministic>true</Deterministic>
+    <!-- Disable ref assembly generation to avoid WSL/Windows cross-filesystem caching issues -->
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <Version>0.0.1</Version>
     <Authors>Marco Lodini and contributors</Authors>
     <Description>Pure crypto and CBOR/WebAuthn logic for PassKee — platform-agnostic, net48 and netstandard2.0 compatible.</Description>
