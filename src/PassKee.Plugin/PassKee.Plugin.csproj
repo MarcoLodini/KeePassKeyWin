@@ -16,15 +16,19 @@
   </PropertyGroup>
 
   <!--
-    The plugin references KeePass.exe directly. Set $(KeePassDir) to your KeePass install directory,
-    either via an environment variable or on the command line:
+    Production build: set $(KeePassDir) to your KeePass install directory.
         dotnet build /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+    Linux/CI build: leave $(KeePassDir) unset — the stub assembly is used instead.
   -->
-  <ItemGroup>
+  <ItemGroup Condition="'$(KeePassDir)' != ''">
     <Reference Include="KeePass">
       <HintPath>$(KeePassDir)\KeePass.exe</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(KeePassDir)' == ''">
+    <ProjectReference Include="..\..\tests\TestSupport\KeePassStub\KeePassStub.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;net48;net8.0</TargetFrameworks>
     <AssemblyName>PassKee.Core</AssemblyName>
     <RootNamespace>PassKee.Core</RootNamespace>
     <LangVersion>latest</LangVersion>
@@ -12,5 +12,17 @@
     <Description>Pure crypto and CBOR/WebAuthn logic for PassKee — platform-agnostic, net48 and netstandard2.0 compatible.</Description>
     <Copyright>Copyright (C) 2026 Marco Lodini and contributors. Licensed under GPL-3.0-or-later.</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- System.Memory provides Span<T>/ReadOnlySpan<T> polyfill for netstandard2.0 -->
+    <PackageReference Include="System.Memory" Version="4.5.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>PassKee.Core.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 
 </Project>
