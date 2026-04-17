@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>KeePass</AssemblyName>
+    <RootNamespace>KeePass</RootNamespace>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Description>Minimal KeePass type stubs for building PassKee.Plugin on non-Windows CI where KeePass.exe is unavailable.</Description>
+  </PropertyGroup>
+
+</Project>

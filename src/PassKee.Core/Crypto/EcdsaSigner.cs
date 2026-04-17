@@ -66,7 +66,7 @@ namespace PassKee.Core.Crypto
             var sDer = EncodeInteger(s);
 
             int seqContentLen = rDer.Length + sDer.Length;
-            var der = new byte[2 + LengthFieldSize(seqContentLen) + seqContentLen];
+            var der = new byte[1 + LengthFieldSize(seqContentLen) + seqContentLen];
             int pos = 0;
             der[pos++] = 0x30; // SEQUENCE
             pos += WriteLength(der, pos, seqContentLen);
@@ -85,7 +85,7 @@ namespace PassKee.Core.Crypto
             // If the high bit is set, prepend a 0x00 to signal a positive integer.
             bool needsPad = (value[start] & 0x80) != 0;
             int contentLen = value.Length - start + (needsPad ? 1 : 0);
-            var encoded = new byte[2 + LengthFieldSize(contentLen) + contentLen];
+            var encoded = new byte[1 + LengthFieldSize(contentLen) + contentLen];
             int pos = 0;
             encoded[pos++] = 0x02; // INTEGER
             pos += WriteLength(encoded, pos, contentLen);

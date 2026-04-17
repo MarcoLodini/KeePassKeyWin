@@ -1,0 +1,45 @@
+# C# / .NET build output
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+.vs/
+_ReSharper.*/
+*.ReSharper
+*.DotSettings.user
+*.pdb
+
+# Rust build output
+target/
+**/*.rs.bk
+
+# MSIX / AppX artifacts
+*.appx
+*.appxbundle
+*.msix
+*.msixbundle
+AppPackages/
+BundleArtifacts/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.fleet/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+*.local.json
+.env
+.env.local
+
+# Repo-level build output
+/out/
+/dist/

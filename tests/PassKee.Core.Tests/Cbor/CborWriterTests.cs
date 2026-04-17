@@ -108,7 +108,9 @@ namespace PassKee.Core.Tests.Cbor
             Assert.Equal(0x02, encoded[3]);
             Assert.Equal(0x14, encoded[4]); // value 20
             Assert.Equal(0x03, encoded[5]);
-            Assert.Equal(0x1e, encoded[6]); // value 30
+            // Uint(30) = 0x18 0x1e (30 > 23, requires 1-byte extra).
+            Assert.Equal(0x18, encoded[6]);
+            Assert.Equal(0x1e, encoded[7]); // value 30
         }
 
         [Fact]
@@ -125,10 +127,15 @@ namespace PassKee.Core.Tests.Cbor
             });
             var encoded = w.Encode();
 
+            // Sorted layout: [0xa3][0x20][0x01][0x21][0x02][0x22][0x03]
             Assert.Equal(0xa3, encoded[0]);
-            Assert.Equal(0x20, encoded[1]); // key -1
-            Assert.Equal(0x22, encoded[4]); // key -3 would be at pos 4 if -1→0x01, -2→0x02...
-            // Just check order by checking key bytes at positions 1,3,5
+            Assert.Equal(0x20, encoded[1]); // key -1 → 0x20
+            Assert.Equal(0x01, encoded[2]); // value 1
+            Assert.Equal(0x21, encoded[3]); // key -2 → 0x21
+            Assert.Equal(0x02, encoded[4]); // value 2
+            Assert.Equal(0x22, encoded[5]); // key -3 → 0x22
+            Assert.Equal(0x03, encoded[6]); // value 3
+            // Keys at positions 1, 3, 5 must be strictly increasing.
             Assert.True(encoded[1] < encoded[3]);
             Assert.True(encoded[3] < encoded[5]);
         }

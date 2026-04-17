@@ -96,16 +96,58 @@ namespace PassKee.Core.Tests.Crypto
         [Fact]
         public void P1363ToDer_LeadingZerosStripped()
         {
-            // r = 0x00 0x00 0x01 followed by 29 zeros → encoded INTEGER length = 1 (just 0x01)
+            // r = 31 zero bytes followed by 0x01 → strips to single byte 0x01.
             var p1363 = new byte[64];
-            p1363[2] = 0x01; // r = 0x000001...
-            p1363[32] = 0x02; // s = 2
+            p1363[31] = 0x01; // r = 0x000000...0001
+            p1363[32] = 0x02; // s[0] = 2 (no leading zeros in s)
 
             var der = EcdsaSigner.P1363ToDer(p1363);
 
             Assert.Equal(0x02, der[2]); // INTEGER r tag
-            Assert.Equal(1, der[3]);     // length = 1
+            Assert.Equal(1, der[3]);    // length = 1 (all leading zeros stripped)
             Assert.Equal(0x01, der[4]); // value = 1
+        }
+
+        [Fact]
+        public void P1363ToDer_LeadingHighBitSet_PrependsZero()
+        {
+            // r = 0xFF followed by 31 zeros → high bit set → needs 0x00 prefix.
+            // s = 0x01 (no pad).
+            var p1363 = new byte[64];
+            p1363[0] = 0xFF;  // r high bit set
+            p1363[32] = 0x01; // s = 1
+
+            var der = EcdsaSigner.P1363ToDer(p1363);
+
+            // INTEGER r: 02 21 00 FF 00...00 (33-byte content: 1 pad + 32 bytes)
+            Assert.Equal(0x02, der[2]);  // INTEGER r tag
+            Assert.Equal(33,   der[3]);  // length 33
+            Assert.Equal(0x00, der[4]);  // pad byte
+            Assert.Equal(0xFF, der[5]);  // first byte of r
+        }
+
+        [Fact]
+        public void P1363ToDer_LeadingZerosThenLargeValue_Stripped()
+        {
+            // r = 30 zeros then 0x00 0x01 → strips leading zeros to leave 0x01 (1 byte).
+            // s = 0x7F followed by 31 zeros (high bit clear → no pad, length=32).
+            var p1363 = new byte[64];
+            p1363[31] = 0x01; // r last byte = 1; all others 0 → strips to single 0x01
+            p1363[32] = 0x7F; // s[0] = 0x7F — high bit clear, no pad needed
+            // s[1..31] are 0x00
+
+            var der = EcdsaSigner.P1363ToDer(p1363);
+
+            // r: 02 01 01
+            Assert.Equal(0x02, der[2]);
+            Assert.Equal(1,    der[3]);
+            Assert.Equal(0x01, der[4]);
+
+            // s starts at der[5]: 02 20 7F 00...00 (content=32 bytes, no pad since 0x7F bit7=0)
+            int sOffset = 5;
+            Assert.Equal(0x02, der[sOffset]);      // INTEGER s tag
+            Assert.Equal(32,   der[sOffset + 1]);  // length = 32
+            Assert.Equal(0x7F, der[sOffset + 2]);  // first byte of s
         }
 
         [Fact]
