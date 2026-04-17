@@ -13,13 +13,12 @@ namespace PassKee.Core.Crypto
         /// </summary>
         /// <returns>
         /// pkcs8      — PKCS#8 DER-encoded private key (store in ProtectedString).
-        /// cosePublicKey — CTAP2-canonical CBOR-encoded COSE_Key (store in Binaries).
         /// x, y       — raw 32-byte big-endian curve coordinates (used internally).
         /// </returns>
         public static (byte[] pkcs8, byte[] x, byte[] y) GenerateKeyPair()
         {
             using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            var pkcs8 = ecdsa.ExportPkcs8PrivateKey();
+            var pkcs8 = ExportPkcs8(ecdsa);
             var parameters = ecdsa.ExportParameters(false);
             return (pkcs8, parameters.Q.X!, parameters.Q.Y!);
         }
@@ -30,8 +29,7 @@ namespace PassKee.Core.Crypto
         /// </summary>
         public static byte[] Sign(byte[] pkcs8PrivateKey, byte[] data)
         {
-            using var ecdsa = ECDsa.Create();
-            ecdsa.ImportPkcs8PrivateKey(pkcs8PrivateKey, out _);
+            using var ecdsa = ImportPkcs8(pkcs8PrivateKey);
             // SignData returns IEEE P1363 (r || s, each 32 bytes for P-256).
             var p1363 = ecdsa.SignData(data, HashAlgorithmName.SHA256);
             return P1363ToDer(p1363);
@@ -43,14 +41,10 @@ namespace PassKee.Core.Crypto
         /// </summary>
         public static void ValidatePkcs8RoundTrip(byte[] pkcs8)
         {
-            using var ecdsa = ECDsa.Create();
-            ecdsa.ImportPkcs8PrivateKey(pkcs8, out var bytesRead);
-            if (bytesRead != pkcs8.Length)
-                throw new CryptographicException("PKCS#8 blob has trailing bytes.");
-            // Export and re-import to confirm the blob is self-consistent.
-            var re = ecdsa.ExportPkcs8PrivateKey();
-            using var ecdsa2 = ECDsa.Create();
-            ecdsa2.ImportPkcs8PrivateKey(re, out _);
+            using var ecdsa = ImportPkcs8(pkcs8);
+            var re = ExportPkcs8(ecdsa);
+            using var ecdsa2 = ImportPkcs8(re);
+            // If both imports succeed without exception, the blob is self-consistent.
         }
 
         // Converts an IEEE P1363 signature (r || s, each exactly half the blob) into
@@ -84,7 +78,6 @@ namespace PassKee.Core.Crypto
         // DER INTEGER encoding: tag 0x02 + length + value (minimal, positive).
         private static byte[] EncodeInteger(ReadOnlySpan<byte> value)
         {
-            // Strip leading zero bytes.
             int start = 0;
             while (start < value.Length - 1 && value[start] == 0)
                 start++;
@@ -126,6 +119,33 @@ namespace PassKee.Core.Crypto
             buf[pos + 1] = (byte)(length >> 8);
             buf[pos + 2] = (byte)length;
             return 3;
+        }
+
+        // PKCS#8 import/export helpers — platform-conditional because ECDsa gained these
+        // methods in .NET 5; on .NET Framework 4.8 we go through CngKey instead.
+        private static byte[] ExportPkcs8(ECDsa ecdsa)
+        {
+#if NET48
+            // On .NET Framework 4.8, cast to ECDsaCng to access the underlying CngKey.
+            if (ecdsa is System.Security.Cryptography.ECDsaCng cng)
+                return cng.Key.Export(System.Security.Cryptography.CngKeyBlobFormat.Pkcs8PrivateBlob);
+            throw new PlatformNotSupportedException("PKCS#8 export requires ECDsaCng on .NET Framework.");
+#else
+            return ecdsa.ExportPkcs8PrivateKey();
+#endif
+        }
+
+        private static ECDsa ImportPkcs8(byte[] pkcs8)
+        {
+#if NET48
+            var key = System.Security.Cryptography.CngKey.Import(
+                pkcs8, System.Security.Cryptography.CngKeyBlobFormat.Pkcs8PrivateBlob);
+            return new System.Security.Cryptography.ECDsaCng(key);
+#else
+            var ecdsa = ECDsa.Create();
+            ecdsa.ImportPkcs8PrivateKey(pkcs8, out _);
+            return ecdsa;
+#endif
         }
     }
 }

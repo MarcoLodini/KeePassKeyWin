@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>PassKee.Harness</AssemblyName>
+    <RootNamespace>PassKee.Harness</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Description>Phase 0.5 harness: bridges Chrome DevTools virtual authenticator to the PassKee plugin pipe for E2E testing without MSIX/COM.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PassKee.Core\PassKee.Core.csproj" />
+  </ItemGroup>
+
+</Project>

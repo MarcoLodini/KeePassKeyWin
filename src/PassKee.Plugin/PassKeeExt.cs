@@ -8,7 +8,7 @@ using PassKee.Plugin.Storage;
 namespace PassKee;
 
 // Class name must be <Namespace>Ext per KeePass plugin loader convention.
-public sealed class PassKeeExt : Plugin
+public sealed class PassKeeExt : KeePass.Plugins.Plugin
 {
     private IPluginHost? _host;
     private PipeServer? _pipeServer;
