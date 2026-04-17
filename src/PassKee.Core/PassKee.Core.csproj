@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>PassKee.Core</AssemblyName>
+    <RootNamespace>PassKee.Core</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Deterministic>true</Deterministic>
+    <Version>0.0.1</Version>
+    <Authors>Marco Lodini and contributors</Authors>
+    <Description>Pure crypto and CBOR/WebAuthn logic for PassKee — platform-agnostic, net48 and netstandard2.0 compatible.</Description>
+    <Copyright>Copyright (C) 2026 Marco Lodini and contributors. Licensed under GPL-3.0-or-later.</Copyright>
+  </PropertyGroup>
+
+</Project>

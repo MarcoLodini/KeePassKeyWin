@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>PassKee</AssemblyName>
+    <RootNamespace>PassKee</RootNamespace>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <Version>0.0.1</Version>
+    <Authors>Marco Lodini and contributors</Authors>
+    <Description>KeePass 2.x plugin — FIDO2 / WebAuthn passkey storage and Windows passkey provider bridge.</Description>
+    <Copyright>Copyright (C) 2026 Marco Lodini and contributors. Licensed under GPL-3.0-or-later.</Copyright>
+  </PropertyGroup>
+
+  <!--
+    The plugin references KeePass.exe directly. Set $(KeePassDir) to your KeePass install directory,
+    either via an environment variable or on the command line:
+        dotnet build /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+  -->
+  <ItemGroup>
+    <Reference Include="KeePass">
+      <HintPath>$(KeePassDir)\KeePass.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PassKee.Core\PassKee.Core.csproj" />
+  </ItemGroup>
+
+</Project>
