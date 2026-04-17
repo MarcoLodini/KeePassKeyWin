@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using KeePass.Plugins;
 using KeePassLib;
 using PassKee.Core.Storage;
@@ -20,9 +21,13 @@ namespace PassKee.Plugin.Storage
         private const string KeyUserName    = "PassKee.userName";
         private const string KeyUserDisplay = "PassKee.userDisplayName";
         private const string KeyPrivateKey  = "PassKee.privateKey";
-        private const string KeyAlgId       = "PassKee.algId";
+        private const string KeyAlgId        = "PassKee.algId";
         private const string KeySignCount   = "PassKee.signCount";
         private const string KeyAaguid      = "PassKee.aaguid";
+        private const string KeyTransports  = "PassKee.transports";
+        private const string KeyFlags       = "PassKee.flags";
+        private const string KeyCreated     = "PassKee.creationTime";
+        private const string KeyLastUsed    = "PassKee.lastUsedTime";
         private const string BinPublicKey   = "PassKee.publicKey.cbor";
 
         private readonly IPluginHost _host;
@@ -46,10 +51,14 @@ namespace PassKee.Plugin.Storage
             entry.Strings.Set(KeyUserName,    new ProtectedString(false, record.UserName));
             entry.Strings.Set(KeyUserDisplay, new ProtectedString(false, record.UserDisplayName));
             entry.Strings.Set(KeyPrivateKey,  new ProtectedString(true, record.PrivateKeyPkcs8));
-            entry.CustomData.Set(KeyAlgId,    record.AlgId.ToString());
+            entry.CustomData.Set(KeyAlgId,     record.AlgId.ToString());
             entry.CustomData.Set(KeySignCount, "0");
-            entry.CustomData.Set(KeyAaguid,   "00000000000000000000000000000000");
-            entry.Binaries.Set(BinPublicKey,  new ProtectedBinary(false, record.PublicKeyCose));
+            entry.CustomData.Set(KeyAaguid,    "00000000000000000000000000000000");
+            entry.CustomData.Set(KeyTransports, record.Transports);
+            entry.CustomData.Set(KeyFlags,     record.Flags);
+            entry.CustomData.Set(KeyCreated,   record.CreationTime.ToString("o"));
+            entry.CustomData.Set(KeyLastUsed,  record.LastUsedTime.ToString("o"));
+            entry.Binaries.Set(BinPublicKey,   new ProtectedBinary(false, record.PublicKeyCose));
 
             // KeePass entry title for human readability.
             entry.Strings.Set("Title", new ProtectedString(false,
@@ -161,6 +170,10 @@ namespace PassKee.Plugin.Storage
                 PrivateKeyPkcs8 = entry.Strings.Get(KeyPrivateKey)?.ReadString() ?? string.Empty,
                 AlgId           = int.TryParse(entry.CustomData.Get(KeyAlgId), out var alg) ? alg : -7,
                 PublicKeyCose   = entry.Binaries.Get(BinPublicKey)?.ReadData() ?? Array.Empty<byte>(),
+                Transports      = entry.CustomData.Get(KeyTransports) ?? "internal",
+                Flags           = entry.CustomData.Get(KeyFlags) ?? string.Empty,
+                CreationTime    = DateTime.TryParse(entry.CustomData.Get(KeyCreated), null, DateTimeStyles.RoundtripKind, out var ct) ? ct : DateTime.MinValue,
+                LastUsedTime    = DateTime.TryParse(entry.CustomData.Get(KeyLastUsed), null, DateTimeStyles.RoundtripKind, out var lu) ? lu : DateTime.MinValue,
             };
     }
 }

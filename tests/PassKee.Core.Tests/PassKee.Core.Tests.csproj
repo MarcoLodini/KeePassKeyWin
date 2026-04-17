@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PassKee.Core\PassKee.Core.csproj" />
+    <ProjectReference Include="..\..\src\PassKee.Plugin\PassKee.Plugin.csproj" />
   </ItemGroup>
 
 </Project>

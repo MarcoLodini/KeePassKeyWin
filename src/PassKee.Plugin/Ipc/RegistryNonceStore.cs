@@ -2,6 +2,9 @@ using System;
 using System.Security.Cryptography;
 using Microsoft.Win32;
 using PassKee.Core.Ipc;
+#if NET5_0_OR_GREATER
+using System.Runtime.Versioning;
+#endif
 
 namespace PassKee.Plugin.Ipc
 {
@@ -12,6 +15,9 @@ namespace PassKee.Plugin.Ipc
     /// Written at plugin startup; consumed (deleted) on first successful hello.
     /// Windows-only — call sites are guarded by OS-version check in PassKeeExt.
     /// </summary>
+#if NET5_0_OR_GREATER
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+#endif
     public sealed class RegistryNonceStore : INonceStore
     {
         private const string RegPath = @"Software\PassKee";

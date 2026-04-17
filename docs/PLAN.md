@@ -24,6 +24,7 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [ ] Plugin: IEEE P1363 `r || s` → DER ASN.1 signature conversion helper + tests
 - [ ] Plugin: CBOR encoder (authData, COSE_Key) — evaluate `PeterO.Cbor` vs `Dahomey.Cbor` for net48 compatibility
 - [ ] Plugin: PwEntry ↔ passkey record mapping; "Passkeys" group management
+  - `KeePassDir` env var / MSBuild property selects real `KeePass.exe` vs stub; set `KeePassDir="C:\Program Files\KeePass Password Safe 2"` for production builds, unset for Linux/CI.
 - [ ] Plugin: JSON-RPC 2.0 server over named pipe; method dispatch
 - [ ] Plugin: OS version gate — refuse activation outside Win11 24H2 26100.6725+
 - [ ] Harness: standalone C# app that drives Chrome DevTools virtual authenticator via the DevTools Protocol, routing CTAP2 calls to the plugin's JSON-RPC pipe
