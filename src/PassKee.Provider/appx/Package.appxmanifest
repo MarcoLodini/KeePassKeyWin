@@ -111,10 +111,15 @@
                 Executable="passkee-provider.exe"
                 Arguments="-PluginActivated"
                 DisplayName="PassKee Passkey Provider">
+              <!-- ThreadingModel is NOT a valid attribute on com:Class within
+                   com:ExeServer — makeappx rejects it (schema error C00CE015).
+                   The MSIX windows.comServer schema puts ThreadingModel on
+                   the in-proc DllPath element only. For ExeServers, the
+                   server process declares its apartment via CoInitializeEx at
+                   startup (we use COINIT_APARTMENTTHREADED in run_com_server). -->
               <com:Class
                 Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
-                DisplayName="PassKee Passkey Provider"
-                ThreadingModel="Apartment" />
+                DisplayName="PassKee Passkey Provider" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>
