@@ -64,18 +64,21 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [x] `makeappx pack` + `signtool sign` — `scripts/build-msix.ps1` + `scripts/sign-msix.ps1` with publisher/cert-subject pre-check
 - [x] Sideload MSIX → `scripts/install-msix.ps1` asserts `Get-AppxPackage` Publisher / Version / PackageFamilyName
 
-**Phase 2.2 — Activation + COM live path** (deferred to next session):
+**Phase 2.2 — Activation + COM live path** ✅ GREEN 2026-04-18 (PassKee visible in Settings → Accounts → Passkeys):
 
-> **Architecture pivot (discovered Session 3):** the Windows Plugin Authenticator API activates providers **out-of-process** via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via a DLL. Two independent sources confirmed: (1) MSIX `%ProgramFiles%\WindowsApps\…` ACLs block in-proc DLL loads from outside the package (documented on `com4:Extension`); (2) Microsoft's PasskeyManager reference sample uses `com:ExeServer`. Phase 2b's in-proc DLL work (`src/com/dll.rs` — `DllGetClassObject` etc.) is the wrong activation pattern and becomes unused dead code. Phase 2.2 moves the class factory into the EXE.
+> **Architecture pivot (Session 3):** out-of-process activation via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via DLL. The in-proc code path (`src/com/dll.rs`) was deleted; class factory + IClassFactory vtable live in `passkee-provider.exe`'s `main()` under `-PluginActivated`.
+>
+> **ABI archaeology (Session 4):** Marco's locally-installed SDK 10.0.26100.0 declares a truncated 7-field `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS`. The runtime DLL on build 26200.8037 implements the 9-field 72-byte shape from SDK 10.0.26100.7175 (the version PasskeyManager declares). Four wrong guesses (7-field with null logos, 7-field with non-null logos, 9-field with inline 16-byte GUID, 9-field with pointer GUID and string CLSID) before the research agent extracted the authoritative header from NuGet. `rclsid` is `REFCLSID` = 8-byte pointer-to-GUID; the two `SupportedRpIds` fields at the tail were being read from stack garbage and crashed (STATUS_ACCESS_VIOLATION) when that garbage looked like a non-zero count.
 
-- [ ] Add `-PluginActivated` arg handling in `passkee-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages until `CoResumeClassObjects` unwinds
-- [ ] Move `IPluginAuthenticatorImpl` / vtable from `src/com/dll.rs` + `src/com/server.rs` into the EXE binary (or keep in `lib.rs` with conditional export)
-- [ ] `WebAuthNPluginAddAuthenticator` call — new subcommand (e.g. `passkee-provider.exe register`) that the user runs once post-install
-- [ ] Verify Settings → Accounts → Passkeys → Advanced options lists the provider
-- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake) under the out-of-proc EXE — different token context than an in-proc DLL, re-validate pipe ACL + HKCU access
-- [ ] Runtime vtable validation: attach debugger to the activated EXE, confirm `IPluginAuthenticator` method slots match production offsets
-- [ ] Tighten `WebauthNPluginOperationResponse` offset assertions in `src/com/types.rs` (currently `size >= 12` only)
-- [ ] Drop the now-dead `passkee_provider.dll` cdylib from the MSIX staging (the manifest no longer references it; keep or remove is a Phase 2.2 hygiene choice)
+- [x] Add `-PluginActivated` arg handling in `passkee-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages
+- [x] Move `IPluginAuthenticatorImpl` / vtable into the EXE binary; delete `src/com/dll.rs` entirely
+- [x] `WebAuthNPluginAddAuthenticator` call — `passkee-provider.exe register` + `unregister` subcommands, runtime-loaded via LoadLibraryW/GetProcAddress (EXPERIMENTAL_ symbol is NOT in webauthn.lib's import table)
+- [x] **Verify Settings → Accounts → Passkeys → Advanced options lists the provider** (hard gate — cleared 2026-04-18)
+- [x] STA re-entrancy: `sta_block_on()` replaces `runtime.block_on` in the authenticator dispatch; uses `CoWaitForMultipleHandles` so the message pump keeps running during pipe I/O
+- [x] Tighten `WebauthNPluginOperationResponse` offset assertions (now `== 16` exact on x64, with `offset_of!` assertions)
+- [x] Drop the `passkee_provider.dll` cdylib — removed from Cargo.toml `crate-type`, build-msix.ps1, validate-phase2.ps1; `src/com/dll.rs` deleted
+- [ ] Named-pipe connection test with live KeePass plugin under the out-of-proc EXE (deferred to Phase 2.3 — requires a scriptable C# pipe server stub)
+- [ ] Runtime vtable validation: attach WinDbg to activated EXE, confirm slot 3 = MakeCredential, slot 6 = GetLockStatus (deferred — run if Phase 3 browser flow debugging needs it)
 
 ## Phase 3 — End-to-end `MakeCredential`
 
