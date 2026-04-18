@@ -21,8 +21,9 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:com2="http://schemas.microsoft.com/appx/manifest/com/windows10/2"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap com rescap">
+  IgnorableNamespaces="uap com com2 rescap">
 
   <!-- ── Identity ─────────────────────────────────────────────────────────── -->
   <Identity
@@ -83,27 +84,26 @@
 
           ThreadingModel: STA — matches the IPluginAuthenticator contract.
 
-          Element choice: windows.comInProcessServer / com:ComInProcessServer is
-          the correct category for in-proc DLL servers. The alternative
-          `windows.comServer` / `com:ComServer` element family only supports
-          out-of-process servers (ExeServer, SurrogateServer, TreatAsClass,
-          ProgId) — makeappx rejects <com:InProcessServer> under <com:ComServer>
-          with schema error 0x80080204.
+          Namespace choice: the base 'com' namespace's ComServer element only
+          accepts out-of-process servers (ExeServer, SurrogateServer,
+          TreatAsClass, ProgId). The 'com2' namespace (windows10/2, available
+          since Win10 1703) adds InProcessServer as a valid child of
+          com2:ComServer — that's what we need for a DLL-hosted COM server.
 
-          Note `Path` is an ATTRIBUTE of com:Class here, not a child element.
-
-          Schema docs:
-            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com-cominprocessserver
+          Schema refs:
+            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com2-inprocessserver
+            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com2-comserver
             https://learn.microsoft.com/windows/win32/com/single-threaded-apartments
         -->
-        <com:Extension Category="windows.comInProcessServer">
-          <com:ComInProcessServer>
-            <com:Class
-              Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
-              Path="passkee_provider.dll"
-              ThreadingModel="STA" />
-          </com:ComInProcessServer>
-        </com:Extension>
+        <com2:Extension Category="windows.comServer">
+          <com2:ComServer>
+            <com2:InProcessServer Path="passkee_provider.dll">
+              <com2:Class
+                Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
+                ThreadingModel="STA" />
+            </com2:InProcessServer>
+          </com2:ComServer>
+        </com2:Extension>
       </Extensions>
     </Application>
   </Applications>
