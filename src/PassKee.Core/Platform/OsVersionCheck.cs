@@ -43,11 +43,17 @@ namespace PassKee.Core.Platform
 
         internal static (bool Ok, string Reason) CheckVersion(int major, int build, int ubr)
         {
-            if (major < MinMajor || build < MinBuild || (build == MinBuild && ubr < MinRevision))
+            // ubr == -1 means "UBR unreadable" (ReadUbrFromRegistry sentinel). Don't
+            // hard-fail on something we couldn't verify — gate on major+build only.
+            // A legitimate UBR of 0 is still possible on an unpatched RTM install, so
+            // we distinguish "read failed" from "read returned 0" explicitly.
+            var ubrFailsMinimum = ubr >= 0 && build == MinBuild && ubr < MinRevision;
+            if (major < MinMajor || build < MinBuild || ubrFailsMinimum)
             {
+                var detected = ubr >= 0 ? $"{major}.0.{build}.{ubr}" : $"{major}.0.{build}.?";
                 return (false,
                     $"PassKee requires Windows 11 24H2 build {MinBuild}.{MinRevision} or newer. " +
-                    $"Detected: {major}.0.{build}.{ubr}");
+                    $"Detected: {detected}");
             }
             return (true, string.Empty);
         }
@@ -96,15 +102,28 @@ namespace PassKee.Core.Platform
             public byte wReserved;
         }
 
+        /// <summary>
+        /// Reads HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\UBR.
+        /// Returns -1 on any read failure (key missing, value missing, wrong type,
+        /// access denied). Callers must treat -1 as "unknown" — a legitimate UBR of
+        /// 0 is possible on unpatched RTM installs.
+        /// </summary>
         private static int ReadUbrFromRegistry()
         {
             try
             {
                 using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
                     @"SOFTWARE\Microsoft\Windows NT\CurrentVersion", writable: false);
-                return key?.GetValue("UBR") is int ubr ? ubr : 0;
+                if (key == null) return -1;
+                var raw = key.GetValue("UBR");
+                return raw switch
+                {
+                    int i  => i,
+                    long l => (int)l,
+                    _      => -1,
+                };
             }
-            catch { return 0; }
+            catch { return -1; }
         }
 #endif
     }

@@ -65,6 +65,40 @@ namespace PassKee.Core.Tests.Platform
             Assert.NotEmpty(reason);
         }
 
+        // ReadUbrFromRegistry returns -1 as a sentinel for "UBR unreadable". We
+        // don't want to hard-fail the OS check when the registry read itself
+        // failed — that would silently disable PassKee on boxes where only the
+        // major+build are determinable. Gate on major+build in that case.
+        [Fact]
+        public void MinimumBuild_UbrUnreadable_IsSupported()
+        {
+            var (ok, _) = Check(10, 26100, -1);
+            Assert.True(ok);
+        }
+
+        [Fact]
+        public void HigherBuild_UbrUnreadable_IsSupported()
+        {
+            var (ok, _) = Check(10, 27000, -1);
+            Assert.True(ok);
+        }
+
+        [Fact]
+        public void LowerBuild_UbrUnreadable_IsNotSupported()
+        {
+            // UBR unreadable should not save a box that's below the minimum build.
+            var (ok, reason) = Check(10, 19045, -1);
+            Assert.False(ok);
+            Assert.Contains("26100", reason);
+        }
+
+        [Fact]
+        public void UnreadableUbr_IsRenderedAsQuestionMark_InReason()
+        {
+            var (_, reason) = Check(10, 19045, -1);
+            Assert.Contains("10.0.19045.?", reason);
+        }
+
         [Fact]
         public void ReasonContainsDetectedVersion_WhenTooOld()
         {
