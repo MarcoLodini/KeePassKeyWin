@@ -11,6 +11,14 @@
     <Deterministic>true</Deterministic>
     <Version>0.0.1</Version>
     <Authors>Marco Lodini and contributors</Authors>
+    <!-- <Product> becomes the Win32 VERSIONINFO ProductName resource baked into
+         the compiled DLL. KeePass 2.x's PluginManager reads that field via
+         FileVersionInfo.GetVersionInfo(...).ProductName during the plugin scan
+         and silently SKIPS any DLL whose ProductName is not exactly
+         "KeePass Plugin" — no log, no dialog, no event-log entry, no PluginCache
+         entry. Without this exact value the DLL never reaches the CLR loader
+         and Initialize() never runs. Do NOT change. -->
+    <Product>KeePass Plugin</Product>
     <Description>KeePass 2.x plugin — FIDO2 / WebAuthn passkey storage and Windows passkey provider bridge.</Description>
     <Copyright>Copyright (C) 2026 Marco Lodini and contributors. Licensed under GPL-3.0-or-later.</Copyright>
   </PropertyGroup>
