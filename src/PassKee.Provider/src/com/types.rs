@@ -184,6 +184,30 @@ pub struct WebauthnPluginAddAuthenticatorResponse {
     pub pb_op_sign_pub_key: *mut u8,
 }
 
+/// Maps to `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST`.
+///
+/// Passed to `WebAuthNPluginPerformUserVerification` so Windows can show
+/// the user-verification (biometric / PIN) prompt. Called from the STA
+/// thread inline — no `sta_block_on` wrapper; Windows pumps its own
+/// dialog messages internally.
+///
+/// x64 layout (40 bytes total):
+///   offset  0: hwnd              (HWND  = isize, 8)
+///   offset  8: transaction_id    (GUID  = Guid,  16)
+///   offset 24: pwsz_username     (LPCWSTR = *const u16, 8)
+///   offset 32: pwsz_display_hint (LPCWSTR = *const u16, 8)
+///   total:     40 bytes
+#[repr(C)]
+pub struct WebauthnPluginUserVerificationRequest {
+    pub hwnd:              isize,           // HWND
+    pub transaction_id:    Guid,            // GUID
+    pub pwsz_username:     *const u16,      // LPCWSTR
+    pub pwsz_display_hint: *const u16,      // LPCWSTR
+}
+
+unsafe impl Send for WebauthnPluginUserVerificationRequest {}
+unsafe impl Sync for WebauthnPluginUserVerificationRequest {}
+
 // ── ABI size assertions ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -305,5 +329,28 @@ mod abi_tests {
         assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorResponse, pb_op_sign_pub_key), 8);
         #[cfg(target_pointer_width = "32")]
         assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorResponse, pb_op_sign_pub_key), 4);
+    }
+
+    #[test]
+    fn user_verification_request_size() {
+        // x64 layout:
+        //   isize(8)@0 + Guid(16)@8 + ptr(8)@24 + ptr(8)@32 = 40 bytes
+        // x86 layout:
+        //   isize(4)@0 + Guid(16)@4 + ptr(4)@20 + ptr(4)@24 = 28 bytes
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 40);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 28);
+    }
+
+    #[test]
+    fn user_verification_request_field_offsets() {
+        assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, hwnd), 0);
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, transaction_id),    8);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_username),    24);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_display_hint), 32);
+        }
     }
 }

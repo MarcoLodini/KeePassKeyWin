@@ -29,6 +29,7 @@ use crate::com::types::{
     Guid,
     WebauthnPluginAddAuthenticatorOptions,
     WebauthnPluginAddAuthenticatorResponse,
+    WebauthnPluginUserVerificationRequest,
 };
 
 // ── Function pointer types ────────────────────────────────────────────────────
@@ -45,12 +46,39 @@ type PfnRemove = unsafe extern "system" fn(*const Guid) -> HRESULT;
 
 type PfnFreeResponse = unsafe extern "system" fn(*mut WebauthnPluginAddAuthenticatorResponse);
 
+/// `WebAuthNPluginPerformUserVerification` / `EXPERIMENTAL_` variant.
+///
+/// Signature from PasskeyManager sample `DelayLoad.h` lines 159-167 and
+/// `PluginAuthenticatorImpl.cpp` lines 266-296 (Win11 SDK 10.0.26100.x+):
+///   HRESULT WebAuthNPluginPerformUserVerification(
+///     PCWEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST pPluginUserVerification,
+///     DWORD* pcbResponse,
+///     PBYTE* ppbResponse
+///   );
+///
+/// Called inline on the STA thread — NOT via sta_block_on. Windows pumps
+/// its own dialog messages while the UV prompt is displayed.
+type PfnPerformUv = unsafe extern "system" fn(
+    *const WebauthnPluginUserVerificationRequest,
+    *mut u32,       // pcbResponse (OUT)
+    *mut *mut u8,   // ppbResponse (OUT)
+) -> HRESULT;
+
+/// `WebAuthNPluginFreeUserVerificationResponse` / `EXPERIMENTAL_` variant.
+///
+/// Frees the heap-allocated UV response buffer returned by
+/// `WebAuthNPluginPerformUserVerification`. Must be called even if we
+/// discard the UV signature bytes (Phase 5 deferred — we don't verify).
+type PfnFreeUvResponse = unsafe extern "system" fn(*mut u8);
+
 // ── Cached bindings ───────────────────────────────────────────────────────────
 
 struct WebauthnBindings {
     add:  PfnAdd,
     remove: PfnRemove,
     free_response: PfnFreeResponse,
+    perform_uv: PfnPerformUv,
+    free_uv_response: PfnFreeUvResponse,
     /// Which symbol name was resolved for `add` — diagnostic only. Stored
     /// as a static string so we can report it even after the call crashes.
     add_symbol_name: &'static str,
@@ -87,12 +115,22 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
             ("WebAuthNPluginFreeAddAuthenticatorResponse",              b"WebAuthNPluginFreeAddAuthenticatorResponse\0"),
             ("EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse", b"EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse\0"),
         ])?;
+        let (perform_uv, _) = get_proc(hmod, &[
+            ("WebAuthNPluginPerformUserVerification",              b"WebAuthNPluginPerformUserVerification\0"),
+            ("EXPERIMENTAL_WebAuthNPluginPerformUserVerification", b"EXPERIMENTAL_WebAuthNPluginPerformUserVerification\0"),
+        ])?;
+        let (free_uv, _) = get_proc(hmod, &[
+            ("WebAuthNPluginFreeUserVerificationResponse",              b"WebAuthNPluginFreeUserVerificationResponse\0"),
+            ("EXPERIMENTAL_WebAuthNPluginFreeUserVerificationResponse", b"EXPERIMENTAL_WebAuthNPluginFreeUserVerificationResponse\0"),
+        ])?;
 
         Ok(WebauthnBindings {
-            add:             unsafe { std::mem::transmute::<_, PfnAdd>(add) },
-            remove:          unsafe { std::mem::transmute::<_, PfnRemove>(rem) },
-            free_response:   unsafe { std::mem::transmute::<_, PfnFreeResponse>(free) },
-            add_symbol_name: add_name,
+            add:              unsafe { std::mem::transmute::<_, PfnAdd>(add) },
+            remove:           unsafe { std::mem::transmute::<_, PfnRemove>(rem) },
+            free_response:    unsafe { std::mem::transmute::<_, PfnFreeResponse>(free) },
+            perform_uv:       unsafe { std::mem::transmute::<_, PfnPerformUv>(perform_uv) },
+            free_uv_response: unsafe { std::mem::transmute::<_, PfnFreeUvResponse>(free_uv) },
+            add_symbol_name:  add_name,
         })
     });
     result.as_ref().map_err(|s| s.as_str())
@@ -158,5 +196,42 @@ pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthent
     // than panic.
     if let Ok(b) = bindings() {
         unsafe { (b.free_response)(p_response) };
+    }
+}
+
+/// Call `WebAuthNPluginPerformUserVerification` (stable name) or
+/// `EXPERIMENTAL_WebAuthNPluginPerformUserVerification` (fallback).
+///
+/// Blocks until the user completes or cancels the UV gesture. Called inline
+/// on the STA thread — Windows pumps its own dialog messages internally.
+///
+/// On S_OK the caller receives `(cb_response, pb_response)` and MUST free
+/// `pb_response` via [`free_user_verification_response`] — even if the
+/// signature bytes are discarded (Phase 5 deferred).
+///
+/// On `E_ABORT` (0x80004004) the user cancelled. On other HRESULT failures
+/// the binding propagates the error code.
+pub fn perform_user_verification(
+    request: &WebauthnPluginUserVerificationRequest,
+    cb_response: *mut u32,
+    pp_response: *mut *mut u8,
+) -> Result<HRESULT, String> {
+    let b = bindings().map_err(|s| s.to_string())?;
+    Ok(unsafe { (b.perform_uv)(request as *const _, cb_response, pp_response) })
+}
+
+/// Call `WebAuthNPluginFreeUserVerificationResponse` (stable) or
+/// `EXPERIMENTAL_WebAuthNPluginFreeUserVerificationResponse` (fallback).
+///
+/// Frees the heap-allocated UV response buffer returned by
+/// `WebAuthNPluginPerformUserVerification`. Safe to call on a null pointer.
+/// Should be called on EVERY exit path after a successful `perform_uv`
+/// invocation — including error paths where the UV response is discarded.
+pub fn free_user_verification_response(pb_response: *mut u8) {
+    if pb_response.is_null() {
+        return;
+    }
+    if let Ok(b) = bindings() {
+        unsafe { (b.free_uv_response)(pb_response) };
     }
 }

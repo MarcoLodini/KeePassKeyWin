@@ -107,7 +107,7 @@ mod tests {
         }
     }
 
-    fn get<'a>(map: &'a [(Value, Value)], k: i64) -> &'a Value {
+    fn get(map: &[(Value, Value)], k: i64) -> &Value {
         map.iter()
             .find(|(key, _)| matches!(key, Value::Integer(i) if i64::try_from(*i) == Ok(k)))
             .map(|(_, v)| v)
