@@ -7,7 +7,11 @@ cargo build          # dev build (Linux, no COM runtime)
 cargo test           # runs all non-Windows-runtime tests
 ```
 
-## Windows cross-compile from Linux (xwin + LLVM)
+## Windows cross-compile from Linux/WSL2 (cargo-xwin)
+
+`cargo-xwin` handles the Windows SDK and CRT download automatically — no
+`sudo`, no manual splatting, no `/opt/xwin`. The SDK is cached in
+`~/.cache/cargo-xwin/` on first use.
 
 ### 1. Install prerequisites
 
@@ -15,27 +19,35 @@ cargo test           # runs all non-Windows-runtime tests
 # Rust MSVC target
 rustup target add x86_64-pc-windows-msvc
 
-# LLVM (lld-link is the linker)
+# LLVM linker + clang (used by cargo-xwin internally)
 sudo apt-get install lld clang
 
-# xwin — fetches Windows SDK and CRT stubs without a Windows machine
-cargo install xwin
-
-# Fetch the SDK into /opt/xwin (matches .cargo/config.toml paths)
-sudo xwin --accept-license splat --output /opt/xwin
+# cargo-xwin — self-managed Windows SDK cache
+cargo install cargo-xwin
 ```
 
-### 2. Build the DLL and CLI
+### 2. First build (downloads ~1 GB of SDK on first invocation)
 
 ```bash
-cargo build --target x86_64-pc-windows-msvc --release
+cargo xwin build --target x86_64-pc-windows-msvc --release
 ```
+
+`cargo-xwin` downloads and unpacks the Windows SDK and CRT stubs into
+`~/.cache/cargo-xwin/xwin/` on first invocation. Subsequent builds reuse
+the cache and are fast.
 
 Outputs:
 - `target/x86_64-pc-windows-msvc/release/passkee_provider.dll`  — COM in-proc server
 - `target/x86_64-pc-windows-msvc/release/passkee-provider.exe` — CLI smoke-test tool
 
-### 3. Alternative: MinGW-w64 (no MSVC SDK required)
+### 3. Verifying the DLL
+
+```bash
+file target/x86_64-pc-windows-msvc/release/passkee_provider.dll
+# → PE32+ executable (DLL) (GUI) x86-64, for MS Windows ...
+```
+
+### 4. Alternative: MinGW-w64 (no MSVC SDK required)
 
 MinGW-w64 works for pure Rust code but may have issues with MSVC COM ABI details.
 Use it only for quick iteration, not for production builds.
