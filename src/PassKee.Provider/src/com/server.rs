@@ -272,9 +272,16 @@ pub(crate) mod imp {
         // ── Step 2: call PerformUserVerification (inline on STA thread) ───────
         // Windows pumps its own dialog messages internally. Do NOT wrap in
         // sta_block_on — that's for async pipe I/O, not blocking UI calls.
+        //
+        // p_transaction_id is REFGUID (pointer), NOT inline. We take the
+        // address of the transactionId field on the incoming operation
+        // request; `req` is a `&WebauthNPluginOperationRequest` owned by
+        // webauthn.dll for the duration of this COM call, so the pointer
+        // is valid until we return. See the `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST`
+        // doc comment in types.rs for the Session 6 crash archaeology.
         let uv_request = WebauthnPluginUserVerificationRequest {
             hwnd:              req.hwnd,
-            transaction_id:    req.transaction_id,
+            p_transaction_id:  &req.transaction_id as *const _,
             pwsz_username:     username_w.as_ptr(),
             pwsz_display_hint: display_hint_w.as_ptr(),
         };
@@ -296,7 +303,6 @@ pub(crate) mod imp {
         // Free the UV response on EVERY exit path from here on.
         // We don't verify the UV signature (Phase 5 deferred — see MEMORY.md).
         webauthn_ext::free_user_verification_response(pb_uv_response);
-        pb_uv_response = std::ptr::null_mut(); // prevent double-free if we add paths
 
         if uv_hr.0 as u32 == E_ABORT {
             // User cancelled the UV prompt — propagate E_ABORT to the caller.

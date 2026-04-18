@@ -184,23 +184,43 @@ pub struct WebauthnPluginAddAuthenticatorResponse {
     pub pb_op_sign_pub_key: *mut u8,
 }
 
-/// Maps to `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST`.
+/// Maps to `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST` as declared in
+/// `webauthnplugin.h` from Windows SDK 10.0.26100.8117-preview (the
+/// authoritative header extracted from the `Microsoft.Windows.SDK.CPP`
+/// NuGet package).
 ///
 /// Passed to `WebAuthNPluginPerformUserVerification` so Windows can show
 /// the user-verification (biometric / PIN) prompt. Called from the STA
 /// thread inline — no `sta_block_on` wrapper; Windows pumps its own
 /// dialog messages internally.
 ///
-/// x64 layout (40 bytes total):
-///   offset  0: hwnd              (HWND  = isize, 8)
-///   offset  8: transaction_id    (GUID  = Guid,  16)
-///   offset 24: pwsz_username     (LPCWSTR = *const u16, 8)
-///   offset 32: pwsz_display_hint (LPCWSTR = *const u16, 8)
-///   total:     40 bytes
+/// **The `rguidTransactionId` field is `REFGUID`, i.e. `const GUID*` — a
+/// pointer, NOT an inline GUID.** Same ABI shape trap as
+/// `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.rclsid` (Session 4). Passing
+/// an inline 16-byte Guid shifts every subsequent field by +8 — the
+/// runtime reads `pwszUsername` at offset 16 (the high 8 bytes of our
+/// inline GUID) as a `const GUID*` and dereferences it, crashing with
+/// `STATUS_ACCESS_VIOLATION` inside `webauthn.dll+0xaa98a` on the first
+/// live Phase 3 browser MakeCredential attempt (Session 6).
+///
+/// x64 layout (32 bytes total):
+///   offset  0: hwnd                 (HWND  = isize, 8)
+///   offset  8: p_transaction_id     (REFGUID = *const Guid, 8)
+///   offset 16: pwsz_username        (LPCWSTR = *const u16, 8)
+///   offset 24: pwsz_display_hint    (LPCWSTR = *const u16, 8)
+///   total:     32 bytes
+///
+/// Note: SDK 8038+ also ships `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST_2`
+/// (48 bytes), adding trailing `cbBufferToSign` + `pbBufferToSign` fields
+/// for request-signature verification. We call the non-`_2` endpoint so
+/// the above 32-byte shape is current for us. If we ever need to call
+/// `WebAuthNPluginPerformUserVerification2` (for example to participate
+/// in request-signature verification — Phase 5 backlog item) we'll need
+/// the longer struct.
 #[repr(C)]
 pub struct WebauthnPluginUserVerificationRequest {
     pub hwnd:              isize,           // HWND
-    pub transaction_id:    Guid,            // GUID
+    pub p_transaction_id:  *const Guid,     // REFGUID = const GUID*
     pub pwsz_username:     *const u16,      // LPCWSTR
     pub pwsz_display_hint: *const u16,      // LPCWSTR
 }
@@ -333,14 +353,15 @@ mod abi_tests {
 
     #[test]
     fn user_verification_request_size() {
-        // x64 layout:
-        //   isize(8)@0 + Guid(16)@8 + ptr(8)@24 + ptr(8)@32 = 40 bytes
-        // x86 layout:
-        //   isize(4)@0 + Guid(16)@4 + ptr(4)@20 + ptr(4)@24 = 28 bytes
+        // Authoritative shape from SDK 10.0.26100.8117-preview webauthnplugin.h:
+        //   x64: isize(8)@0 + *const Guid(8)@8 + ptr(8)@16 + ptr(8)@24 = 32 bytes
+        //   x86: isize(4)@0 + *const Guid(4)@4 + ptr(4)@8  + ptr(4)@12 = 16 bytes
+        // `rguidTransactionId` is REFGUID (pointer), NOT inline GUID — same trap
+        // as rclsid in WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.
         #[cfg(target_pointer_width = "64")]
-        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 40);
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 32);
         #[cfg(target_pointer_width = "32")]
-        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 28);
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest>(), 16);
     }
 
     #[test]
@@ -348,9 +369,9 @@ mod abi_tests {
         assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, hwnd), 0);
         #[cfg(target_pointer_width = "64")]
         {
-            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, transaction_id),    8);
-            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_username),    24);
-            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_display_hint), 32);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, p_transaction_id), 8);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_username),    16);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_display_hint), 24);
         }
     }
 }
