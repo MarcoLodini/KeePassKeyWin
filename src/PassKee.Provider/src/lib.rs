@@ -18,6 +18,10 @@ pub mod com {
     // EXE-server entry points (ClassFactory, run_com_server, cmd_register, cmd_unregister).
     #[cfg(windows)]
     pub mod exe_server;
+    // Manual FFI bindings for EXPERIMENTAL_WebAuthNPlugin* registration APIs
+    // (not in windows-rs 0.61). Used by exe_server::cmd_register / cmd_unregister.
+    #[cfg(windows)]
+    pub mod webauthn_ext;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;

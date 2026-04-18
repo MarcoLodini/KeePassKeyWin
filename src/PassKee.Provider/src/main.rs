@@ -7,7 +7,7 @@
 //!   smoke             -- Connect, handshake, print hello response.
 //!   make-credential   -- Full makeCredential flow via the plugin pipe.
 
-use passkee_provider::ipc::{self, PipeClient};
+use passkee_provider::ipc::PipeClient;
 use passkee_provider::ctap::{
     self as ctap,
     CreatePasskeyParams, DeleteCredentialParams, ListCredentialsParams,

@@ -359,20 +359,144 @@ where
     recv_result.expect("tokio task panicked — see logs")
 }
 
-/// Register PassKee as a passkey provider with Windows WebAuthn.
+/// CLSID of the PassKee plugin, in the string form expected by
+/// EXPERIMENTAL_WebAuthNPluginAddAuthenticator. Uppercase + brace-wrapped
+/// to match Microsoft's PasskeyManager reference sample — COM GUID parsing
+/// is documented as case-insensitive, but the EXPERIMENTAL_ APIs have no
+/// such contract, and silent-failure-in-Settings is the hardest class of
+/// bug to diagnose. Hedge with uppercase.
 ///
-/// Track C will replace this stub with a real call to
-/// `WebAuthNPluginAddAuthenticator`.
+/// The MSIX manifest CLSID (Package.appxmanifest) uses lowercase per the
+/// project's existing convention; that's fine because the manifest is
+/// parsed by makeappx (standard GUID parser, case-insensitive).
 #[cfg(windows)]
-pub fn cmd_register() -> Result<(), String> {
-    unimplemented!("Track C — WebAuthNPluginAddAuthenticator comes next");
+const CLSID_STR: &str = "{D26BCF6F-B54C-43FF-9F06-D5BF148625F7}";
+
+/// Human-visible name shown in Settings → Accounts → Passkeys → Advanced.
+#[cfg(windows)]
+const AUTHENTICATOR_DISPLAY_NAME: &str = "PassKee";
+
+/// Build the minimal-but-valid CTAP2 `authenticatorGetInfo` CBOR response
+/// required by the WebAuthN plugin-provider registration API.
+///
+/// Advertises:
+///   1 (versions): ["FIDO_2_0"]
+///   3 (aaguid):   16 zero bytes (non-attesting — v1 non-goal)
+///   4 (options):  {"rk": true}   — PassKee stores credentials in the vault,
+///                                  so all credentials are resident by design.
+///
+/// All other fields (algorithms, transports, pinUvAuthProtocols, etc.) are
+/// deliberately omitted — CTAP2.1 §6.4 only requires `versions` + `aaguid`.
+/// Extending this later does NOT break existing registrations; Windows
+/// re-reads the blob on each register call.
+#[cfg(windows)]
+fn authenticator_get_info_cbor() -> Vec<u8> {
+    use ciborium::Value;
+
+    let versions = Value::Array(vec![Value::Text("FIDO_2_0".into())]);
+    let aaguid   = Value::Bytes(vec![0u8; 16]);
+    let options  = Value::Map(vec![
+        (Value::Text("rk".into()), Value::Bool(true)),
+    ]);
+
+    let info = Value::Map(vec![
+        (Value::Integer(1.into()), versions),
+        (Value::Integer(3.into()), aaguid),
+        (Value::Integer(4.into()), options),
+    ]);
+
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&info, &mut bytes)
+        .expect("authenticatorGetInfo CBOR encode");
+    bytes
 }
 
-/// Unregister PassKee from Windows WebAuthn.
+/// Convert a Rust `&str` to a null-terminated UTF-16 buffer suitable for
+/// passing as `LPCWSTR`. The returned `Vec<u16>` owns the data; the caller
+/// must keep it alive until the FFI call returns.
+#[cfg(windows)]
+fn to_utf16_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0u16)).collect()
+}
+
+/// Register PassKee as a passkey provider with Windows WebAuthn.
 ///
-/// Track C will replace this stub with a real call to
-/// `WebAuthNPluginRemoveAuthenticator`.
+/// Calls `EXPERIMENTAL_WebAuthNPluginAddAuthenticator` with our CLSID, a
+/// minimal `authenticatorGetInfo` CBOR blob, and null optional fields. On
+/// S_OK the WebAuthN API returns an operation-signing public key inside a
+/// heap-allocated response struct — we free it immediately via
+/// `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. The key is
+/// intentionally discarded (signature-verification on incoming plugin
+/// requests is a Phase 3 non-goal; see MEMORY.md).
+///
+/// Idempotence: the Windows API is documented idempotent — repeated calls
+/// with the same CLSID update the existing registration.
+#[cfg(windows)]
+pub fn cmd_register() -> Result<(), String> {
+    use crate::com::types::WebauthnPluginAddAuthenticatorOptions;
+    use crate::com::webauthn_ext;
+
+    // Keep all owned data alive for the duration of the FFI call.
+    let name_w  = to_utf16_null(AUTHENTICATOR_DISPLAY_NAME);
+    let clsid_w = to_utf16_null(CLSID_STR);
+    let info    = authenticator_get_info_cbor();
+
+    let opts = WebauthnPluginAddAuthenticatorOptions {
+        pwsz_authenticator_name: name_w.as_ptr(),
+        pwsz_plugin_cls_id:      clsid_w.as_ptr(),
+        pwsz_plugin_rp_id:       std::ptr::null(),
+        pwsz_light_theme_logo:   std::ptr::null(),
+        pwsz_dark_theme_logo:    std::ptr::null(),
+        cb_authenticator_info:   info.len() as u32,
+        pb_authenticator_info:   info.as_ptr(),
+    };
+
+    let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
+        = std::ptr::null_mut();
+
+    let hr = webauthn_ext::add_authenticator(&opts, &mut response_ptr)?;
+
+    // Free the response BEFORE error-handling so the op-signing key is
+    // never leaked, even on partial-success HRESULTs. free_add_authenticator_response
+    // is a no-op on null.
+    webauthn_ext::free_add_authenticator_response(response_ptr);
+
+    if hr.is_err() {
+        return Err(format!(
+            "EXPERIMENTAL_WebAuthNPluginAddAuthenticator failed: 0x{:08x}",
+            hr.0 as u32,
+        ));
+    }
+
+    println!("PassKee registered as a passkey provider.");
+    Ok(())
+}
+
+/// Unregister PassKee from Windows WebAuthn. Idempotent: if the plugin is
+/// not currently registered, the API returns `HRESULT_FROM_WIN32(ERROR_NOT_FOUND)`
+/// which we map to a warning + success.
 #[cfg(windows)]
 pub fn cmd_unregister() -> Result<(), String> {
-    unimplemented!("Track C — WebAuthNPluginRemoveAuthenticator comes next");
+    use crate::com::webauthn_ext;
+
+    // HRESULT_FROM_WIN32(ERROR_NOT_FOUND) — treat as idempotent success.
+    const HR_NOT_FOUND: u32 = 0x8007_0490;
+
+    let clsid_w = to_utf16_null(CLSID_STR);
+    let hr = webauthn_ext::remove_authenticator(clsid_w.as_ptr())?;
+
+    match hr.0 as u32 {
+        0 => {
+            println!("PassKee unregistered.");
+            Ok(())
+        }
+        HR_NOT_FOUND => {
+            eprintln!("[unregister] not currently registered (ERROR_NOT_FOUND) — treating as success.");
+            Ok(())
+        }
+        code => Err(format!(
+            "EXPERIMENTAL_WebAuthNPluginRemoveAuthenticator failed: 0x{:08x}",
+            code,
+        )),
+    }
 }

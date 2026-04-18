@@ -110,6 +110,53 @@ pub const IID_IPLUGIN_AUTHENTICATOR: Guid = Guid {
     data4: [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7],
 };
 
+// ── EXPERIMENTAL_ WebAuthN plugin registration structs ────────────────────────
+//
+// Map to `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS` and
+// `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_RESPONSE` in webauthn.h
+// (Windows 11 SDK 10.0.26100.0+). The `EXPERIMENTAL_` prefix is Microsoft's
+// marker for unstable APIs — expect field renames / additions between SDK
+// revisions; re-verify on every SDK bump. No version constant exists at the
+// struct level (unlike many other windows-sdk plugin APIs).
+
+/// Maps to `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS`.
+///
+/// x64 layout (verified against SDK 10.0.26100.0):
+///   offset 0:  pwsz_authenticator_name (ptr, 8)
+///   offset 8:  pwsz_plugin_cls_id      (ptr, 8)
+///   offset 16: pwsz_plugin_rp_id       (ptr, 8)   // optional
+///   offset 24: pwsz_light_theme_logo   (ptr, 8)   // optional (base64 SVG 1.1)
+///   offset 32: pwsz_dark_theme_logo    (ptr, 8)   // optional (base64 SVG 1.1)
+///   offset 40: cb_authenticator_info   (u32, 4)
+///   [4 bytes padding for pointer alignment]
+///   offset 48: pb_authenticator_info   (ptr, 8)   // CTAP CBOR authenticatorGetInfo
+///   total:     56 bytes
+#[repr(C)]
+pub struct WebauthnPluginAddAuthenticatorOptions {
+    pub pwsz_authenticator_name: *const u16,
+    pub pwsz_plugin_cls_id:      *const u16,
+    pub pwsz_plugin_rp_id:       *const u16,
+    pub pwsz_light_theme_logo:   *const u16,
+    pub pwsz_dark_theme_logo:    *const u16,
+    pub cb_authenticator_info:   u32,
+    pub pb_authenticator_info:   *const u8,
+}
+
+/// Maps to `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_RESPONSE`.
+///
+/// Contains the operation-signing public key Windows uses to sign
+/// `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature`. The plugin is
+/// expected to verify each incoming request signature against this key.
+/// For Phase 2.2 we receive + free the response without verifying — any
+/// future enforcement by webauthn.dll will surface as dispatch failures.
+///
+/// x64 layout: { DWORD cbOpSignPubKey; PBYTE pbOpSignPubKey; } = 16 bytes.
+#[repr(C)]
+pub struct WebauthnPluginAddAuthenticatorResponse {
+    pub cb_op_sign_pub_key: u32,
+    pub pb_op_sign_pub_key: *mut u8,
+}
+
 // ── ABI size assertions ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -142,9 +189,41 @@ mod abi_tests {
 
     #[test]
     fn operation_response_size() {
-        // cb_encoded_response (4) + 4 pad + pb_encoded_response (8) = 16
-        // Or on some compilers: cb(4) + ptr(8) with natural alignment = 16
-        assert!(size_of::<WebauthNPluginOperationResponse>() >= 12);
+        // Layout: { DWORD cbEncodedResponse; byte *pbEncodedResponse; }
+        // x64: u32(4) + pad(4) + ptr(8) = 16
+        // x86: u32(4) + ptr(4) = 8
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthNPluginOperationResponse>(), 16);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthNPluginOperationResponse>(), 8);
+    }
+
+    #[test]
+    fn operation_response_field_offsets() {
+        assert_eq!(offset_of!(WebauthNPluginOperationResponse, cb_encoded_response), 0);
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(offset_of!(WebauthNPluginOperationResponse, pb_encoded_response), 8);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(offset_of!(WebauthNPluginOperationResponse, pb_encoded_response), 4);
+    }
+
+    #[test]
+    fn iid_constants_agree() {
+        use crate::com::types::IID_IPLUGIN_AUTHENTICATOR;
+        // Always assert local constant has expected value:
+        assert_eq!(IID_IPLUGIN_AUTHENTICATOR.data1, 0xd26b_cf6f);
+        assert_eq!(IID_IPLUGIN_AUTHENTICATOR.data2, 0xb54c);
+        assert_eq!(IID_IPLUGIN_AUTHENTICATOR.data3, 0x43ff);
+        assert_eq!(IID_IPLUGIN_AUTHENTICATOR.data4, [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7]);
+        // Windows-only: also verify the From impl produces the same bytes.
+        #[cfg(windows)]
+        {
+            let w: windows::core::GUID = IID_IPLUGIN_AUTHENTICATOR.into();
+            assert_eq!(w.data1, IID_IPLUGIN_AUTHENTICATOR.data1);
+            assert_eq!(w.data2, IID_IPLUGIN_AUTHENTICATOR.data2);
+            assert_eq!(w.data3, IID_IPLUGIN_AUTHENTICATOR.data3);
+            assert_eq!(w.data4, IID_IPLUGIN_AUTHENTICATOR.data4);
+        }
     }
 
     #[test]
@@ -156,5 +235,52 @@ mod abi_tests {
     #[test]
     fn request_type_value() {
         assert_eq!(WebauthNPluginRequestType::Ctap2Cbor as u32, 1);
+    }
+
+    #[test]
+    fn add_authenticator_options_size() {
+        // SDK 10.0.26100.0 layout:
+        //   5 × LPCWSTR (ptr, 8 each)              = 40
+        //   DWORD cb_authenticator_info (4) + pad  = 8
+        //   PBYTE pb_authenticator_info (ptr, 8)   = 8
+        // Total on x64: 56. On x86: 5*4 + 4 + 4 = 28.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorOptions>(), 56);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorOptions>(), 28);
+    }
+
+    #[test]
+    fn add_authenticator_options_field_offsets() {
+        assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_authenticator_name), 0);
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_plugin_cls_id),      8);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_plugin_rp_id),       16);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_light_theme_logo),   24);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_dark_theme_logo),    32);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, cb_authenticator_info),   40);
+            // 4 bytes padding before pb_authenticator_info aligns to 8.
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pb_authenticator_info),   48);
+        }
+    }
+
+    #[test]
+    fn add_authenticator_response_size() {
+        // Layout: { DWORD cb; PBYTE pb; }
+        // x64: u32(4) + pad(4) + ptr(8) = 16. x86: u32(4) + ptr(4) = 8.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorResponse>(), 16);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorResponse>(), 8);
+    }
+
+    #[test]
+    fn add_authenticator_response_field_offsets() {
+        assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorResponse, cb_op_sign_pub_key), 0);
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorResponse, pb_op_sign_pub_key), 8);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorResponse, pb_op_sign_pub_key), 4);
     }
 }
