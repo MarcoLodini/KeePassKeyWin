@@ -68,10 +68,13 @@ Write-Host ''
 Write-Host '[build-msix] --- Step 2/5: Assert Assets ---'
 
 $assetsDir = Join-Path $repoRoot 'src\PassKee.Provider\appx\Assets'
+# Parentheses are required: on PS 6+ `Join-Path` has `-AdditionalChildPath`,
+# so a bare `Join-Path a b, c, d` binds the commas to the first call as an
+# array argument instead of producing three separate array elements.
 $requiredAssets = @(
-    Join-Path $assetsDir 'StoreLogo.png',
-    Join-Path $assetsDir 'Square150x150Logo.png',
-    Join-Path $assetsDir 'Square44x44Logo.png'
+    (Join-Path $assetsDir 'StoreLogo.png'),
+    (Join-Path $assetsDir 'Square150x150Logo.png'),
+    (Join-Path $assetsDir 'Square44x44Logo.png')
 )
 
 foreach ($asset in $requiredAssets) {
