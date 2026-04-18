@@ -80,15 +80,20 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [ ] Named-pipe connection test with live KeePass plugin under the out-of-proc EXE (deferred to Phase 2.3 — requires a scriptable C# pipe server stub)
 - [ ] Runtime vtable validation: attach WinDbg to activated EXE, confirm slot 3 = MakeCredential, slot 6 = GetLockStatus (deferred — run if Phase 3 browser flow debugging needs it)
 
-## Phase 3 — End-to-end `MakeCredential`
+## Phase 3 — End-to-end `MakeCredential` ✅ GREEN 2026-04-18
 
-Code-side complete 2026-04-18 (Session 5). Linux tests green: 181 C#, 46 Rust, 0 clippy warnings. Live browser E2E still pending on Marco's Win11 box.
+Live browser E2E PASSED on Marco's Win11 25H2 box. Registration at webauthn.io via PassKee succeeds end-to-end.
 
-- [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/PassKee.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard
+- [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/PassKee.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard. Session 6 fix: `SkipValue` tolerates MT7 simple values (false/true/null/undefined) so we can ignore `options: {rk:true, uv:true}` — webauthn.io sends them and we were rejecting.
 - [x] authData construction with real UV flag — `AuthDataBuilder.Build/BuildAssertion` now require explicit `userVerified` (no default); flag propagated from Rust-side UV result
-- [x] Windows Hello UV via `WebAuthNPluginPerformUserVerification` — dynamic LoadLibrary binding (stable-name-first, EXPERIMENTAL_ fallback), called inline on STA, response freed on every path, E_ABORT propagated on user cancel
-- [x] `passkee.makeCredentialRaw` IPC round-trip — new JSON-RPC method carries `{cbor, uv}`; returns `{cbor}` CTAP2 attestation object with **integer keys** `{1:"none", 2:authData, 3:{}}` per CTAP 2.1 §6.1 (NOT WebAuthn L3 §6.5.5 text-keyed shape — that's what webauthn.dll produces AFTER converting). Added error codes `-32030 UnsupportedAlgorithm`, `-32031 CredentialExcluded`.
-- [ ] webauthn.io from Edge: register succeeds, server-side attestation verification passes — **Marco-driven browser smoke test is Track 5; next session**
+- [x] Windows Hello UV via `WebAuthNPluginPerformUserVerification` — dynamic LoadLibrary binding (stable-name-first, EXPERIMENTAL_ fallback), called inline on STA, response freed on every path, E_ABORT propagated on user cancel. Session 6 fix: `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST.rguidTransactionId` is `REFGUID` (pointer), not inline GUID — struct 40→32 bytes.
+- [x] `passkee.makeCredentialRaw` IPC round-trip — new JSON-RPC method carries `{cbor, uv}`; returns `{cbor}` CTAP2 attestation object with **integer keys** `{1:"none", 2:authData, 3:{}}` per CTAP 2.1 §6.1. Error codes: `-32030 UnsupportedAlgorithm`, `-32031 CredentialExcluded`. Session 6 fix: Rust sidecar now performs `passkee.hello` handshake (PFN + HKCU nonce) on COM activation; plugin's `RegistryNonceStore.ConsumeNonce` rotates the nonce so subsequent activations can authenticate.
+- [x] webauthn.io from Edge: register succeeds, server-side attestation verification passes — ✅ 2026-04-18 on Win11 build 26200.8037. Credential persisted to vault; site confirms registration.
+- [x] `cmd_register` idempotent refresh on NTE_EXISTS — remove+retry wraps the plugin-registration API whose documented "update on re-register" isn't actually implemented by the runtime.
+
+**Deferred to Phase 3.1 (polish):**
+- [ ] Switch `passkee-provider.exe` to `#![windows_subsystem = "windows"]` so the console stops flashing during COM activation. Kept as console for now because the `[activate]` / `[dispatch]` `eprintln!` breadcrumbs are load-bearing for live debugging.
+- [ ] Demote `eprintln!` breadcrumbs to `tracing::debug` once stable.
 
 ## Phase 4 — End-to-end `GetAssertion`
 
