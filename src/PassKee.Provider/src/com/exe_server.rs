@@ -359,22 +359,41 @@ where
     recv_result.expect("tokio task panicked — see logs")
 }
 
-/// CLSID of the PassKee plugin, in the string form expected by
-/// EXPERIMENTAL_WebAuthNPluginAddAuthenticator. Uppercase + brace-wrapped
-/// to match Microsoft's PasskeyManager reference sample — COM GUID parsing
-/// is documented as case-insensitive, but the EXPERIMENTAL_ APIs have no
-/// such contract, and silent-failure-in-Settings is the hardest class of
-/// bug to diagnose. Hedge with uppercase.
-///
-/// The MSIX manifest CLSID (Package.appxmanifest) uses lowercase per the
-/// project's existing convention; that's fine because the manifest is
-/// parsed by makeappx (standard GUID parser, case-insensitive).
+/// CLSID of the PassKee plugin, as inline 16-byte GUID — what the newer
+/// `WebAuthNPluginAddAuthenticator` struct expects (`rclsid` field). An
+/// earlier revision of this code passed it as a wide string (LPCWSTR per
+/// the SDK 10.0.26100.0 header); the runtime DLL on Win11 25H2 uses the
+/// updated ABI with an inline GUID, and the string form was read as 16
+/// bytes of UTF-16 → NTE_INVALID_PARAMETER.
+#[cfg(windows)]
+const CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
+    data1: 0xd26b_cf6f,
+    data2: 0xb54c,
+    data3: 0x43ff,
+    data4: [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7],
+};
+
+/// CLSID of the PassKee plugin in the wide-string form used by
+/// `WebAuthNPluginRemoveAuthenticator`. The Remove API appears to still
+/// take a CLSID string (its signature in the SDK 10.0.26100.0 header is
+/// `LPCWSTR pwszPluginClsId`), and Marco's first unregister attempt
+/// returned `ERROR_FILE_NOT_FOUND` rather than `NTE_INVALID_PARAMETER`
+/// — so the string is being parsed correctly by this path.
+/// Uppercase + brace-wrapped to match COM-typical convention.
 #[cfg(windows)]
 const CLSID_STR: &str = "{D26BCF6F-B54C-43FF-9F06-D5BF148625F7}";
 
 /// Human-visible name shown in Settings → Accounts → Passkeys → Advanced.
 #[cfg(windows)]
 const AUTHENTICATOR_DISPLAY_NAME: &str = "PassKee";
+
+/// Non-null `pwszPluginRpId` — the runtime API rejects null here even
+/// though SDK docs mark the field "Optional, required for nested
+/// WebAuthN calls". The Microsoft PasskeyManager reference sample always
+/// sets a real domain string (`contoso.com`). Use a `.local` so it can
+/// never be mistaken for a registered public suffix.
+#[cfg(windows)]
+const PLUGIN_RP_ID: &str = "passkee.local";
 
 // PASSKEE_AAGUID and authenticator_get_info_cbor() live in
 // `crate::com::authenticator_info` — cross-platform so Linux CI covers the
@@ -408,17 +427,19 @@ pub fn cmd_register() -> Result<(), String> {
 
     // Keep all owned data alive for the duration of the FFI call.
     let name_w  = to_utf16_null(AUTHENTICATOR_DISPLAY_NAME);
-    let clsid_w = to_utf16_null(CLSID_STR);
+    let rp_id_w = to_utf16_null(PLUGIN_RP_ID);
     let info    = authenticator_get_info_cbor();
 
     let opts = WebauthnPluginAddAuthenticatorOptions {
-        pwsz_authenticator_name: name_w.as_ptr(),
-        pwsz_plugin_cls_id:      clsid_w.as_ptr(),
-        pwsz_plugin_rp_id:       std::ptr::null(),
-        pwsz_light_theme_logo:   std::ptr::null(),
-        pwsz_dark_theme_logo:    std::ptr::null(),
-        cb_authenticator_info:   info.len() as u32,
-        pb_authenticator_info:   info.as_ptr(),
+        pwsz_authenticator_name:   name_w.as_ptr(),
+        rclsid:                    CLSID_GUID,
+        pwsz_plugin_rp_id:         rp_id_w.as_ptr(),
+        pwsz_light_theme_logo_svg: std::ptr::null(),
+        pwsz_dark_theme_logo_svg:  std::ptr::null(),
+        cb_authenticator_info:     info.len() as u32,
+        pb_authenticator_info:     info.as_ptr(),
+        c_supported_rp_ids:        0,
+        ppwsz_supported_rp_ids:    std::ptr::null(),
     };
 
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
@@ -427,13 +448,13 @@ pub fn cmd_register() -> Result<(), String> {
     let hr = webauthn_ext::add_authenticator(&opts, &mut response_ptr)?;
 
     // Free the response BEFORE error-handling so the op-signing key is
-    // never leaked, even on partial-success HRESULTs. free_add_authenticator_response
-    // is a no-op on null.
+    // never leaked, even on partial-success HRESULTs.
+    // free_add_authenticator_response is a no-op on null.
     webauthn_ext::free_add_authenticator_response(response_ptr);
 
     if hr.is_err() {
         return Err(format!(
-            "EXPERIMENTAL_WebAuthNPluginAddAuthenticator failed: 0x{:08x}",
+            "WebAuthNPluginAddAuthenticator failed: 0x{:08x}",
             hr.0 as u32,
         ));
     }

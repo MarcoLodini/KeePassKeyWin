@@ -56,19 +56,30 @@ unsafe impl Sync for WebauthnBindings {}
 
 static BINDINGS: OnceLock<Result<WebauthnBindings, String>> = OnceLock::new();
 
-/// Load webauthn.dll and resolve the three EXPERIMENTAL_ entry points.
-/// Cached — subsequent calls return the same result. On failure every
-/// subsequent call returns the same error; no retry.
+/// Load webauthn.dll and resolve the three plugin-registration entry
+/// points. Each symbol is looked up under its stable name first
+/// (`WebAuthNPlugin…`, available on Win11 25H2 + SDK 10.0.26100.7175+),
+/// with a fallback to the legacy `EXPERIMENTAL_` name. Cached — subsequent
+/// calls return the same result. On failure every subsequent call returns
+/// the same error; no retry.
 fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
     let result = BINDINGS.get_or_init(|| {
-        // LoadLibraryW takes a null-terminated UTF-16 string.
         let dll_name: Vec<u16> = "webauthn.dll\0".encode_utf16().collect();
         let hmod: HMODULE = unsafe { LoadLibraryW(PCWSTR(dll_name.as_ptr())) }
             .map_err(|e| format!("LoadLibraryW(webauthn.dll) failed: {e}"))?;
 
-        let add  = get_proc(hmod, b"EXPERIMENTAL_WebAuthNPluginAddAuthenticator\0")?;
-        let rem  = get_proc(hmod, b"EXPERIMENTAL_WebAuthNPluginRemoveAuthenticator\0")?;
-        let free = get_proc(hmod, b"EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse\0")?;
+        let add  = get_proc(hmod, &[
+            b"WebAuthNPluginAddAuthenticator\0",
+            b"EXPERIMENTAL_WebAuthNPluginAddAuthenticator\0",
+        ])?;
+        let rem  = get_proc(hmod, &[
+            b"WebAuthNPluginRemoveAuthenticator\0",
+            b"EXPERIMENTAL_WebAuthNPluginRemoveAuthenticator\0",
+        ])?;
+        let free = get_proc(hmod, &[
+            b"WebAuthNPluginFreeAddAuthenticatorResponse\0",
+            b"EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse\0",
+        ])?;
 
         Ok(WebauthnBindings {
             add:           unsafe { std::mem::transmute::<_, PfnAdd>(add) },
@@ -79,25 +90,25 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
     result.as_ref().map_err(|s| s.as_str())
 }
 
-/// Resolve a symbol from `hmod`, returning a non-null function pointer or a
-/// descriptive error. `name` must be a null-terminated ASCII byte literal.
-/// The returned pointer type matches windows-rs's `FARPROC` shape
-/// (`fn() -> isize`); callers `transmute` it to their real signature.
-fn get_proc(hmod: HMODULE, name: &[u8]) -> Result<unsafe extern "system" fn() -> isize, String> {
-    // Safety: name is a valid null-terminated C string.
-    let proc = unsafe { GetProcAddress(hmod, PCSTR(name.as_ptr())) };
-    match proc {
-        Some(p) => Ok(p),
-        None => {
-            // Strip trailing NUL for the error message.
-            let name_str = std::str::from_utf8(&name[..name.len() - 1]).unwrap_or("<non-utf8>");
-            Err(format!(
-                "GetProcAddress({name_str}) returned NULL — webauthn.dll does not export \
-                 this EXPERIMENTAL_ symbol. Your Windows build may predate SDK 10.0.26100 \
-                 (KB5068861, November 2025)."
-            ))
+/// Resolve the first matching symbol from `hmod`, returning a non-null
+/// function pointer or a descriptive error that lists every name tried.
+/// Each name must be a null-terminated ASCII byte slice.
+fn get_proc(hmod: HMODULE, names: &[&[u8]]) -> Result<unsafe extern "system" fn() -> isize, String> {
+    for name in names {
+        let proc = unsafe { GetProcAddress(hmod, PCSTR(name.as_ptr())) };
+        if let Some(p) = proc {
+            return Ok(p);
         }
     }
+    let tried: Vec<&str> = names
+        .iter()
+        .map(|n| std::str::from_utf8(&n[..n.len() - 1]).unwrap_or("<non-utf8>"))
+        .collect();
+    Err(format!(
+        "GetProcAddress failed for all of {tried:?} — webauthn.dll on this build does not \
+         export any of them. Requires Win11 24H2 26100.6725+ (KB5068861, Nov 2025) with the \
+         plugin-passkey provider API."
+    ))
 }
 
 // ── Public wrappers ───────────────────────────────────────────────────────────
