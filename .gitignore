@@ -15,6 +15,9 @@ target/
 **/*.rs.bk
 .xwin-cache/
 
+# Claude Code worktree artifacts
+.claude/
+
 # MSIX / AppX artifacts
 *.appx
 *.appxbundle
