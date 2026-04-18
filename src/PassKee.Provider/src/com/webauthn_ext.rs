@@ -26,6 +26,7 @@ use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 use crate::com::types::{
+    Guid,
     WebauthnPluginAddAuthenticatorOptions,
     WebauthnPluginAddAuthenticatorResponse,
 };
@@ -37,7 +38,10 @@ type PfnAdd = unsafe extern "system" fn(
     *mut *mut WebauthnPluginAddAuthenticatorResponse,
 ) -> HRESULT;
 
-type PfnRemove = unsafe extern "system" fn(*const u16) -> HRESULT;
+/// Remove takes `REFCLSID` (const GUID*) per webauthnplugin.h. An earlier
+/// version of this binding used `*const u16` (LPCWSTR) matching Marco's
+/// outdated 10.0.26100.0 SDK header — that SDK lagged the runtime ABI.
+type PfnRemove = unsafe extern "system" fn(*const Guid) -> HRESULT;
 
 type PfnFreeResponse = unsafe extern "system" fn(*mut WebauthnPluginAddAuthenticatorResponse);
 
@@ -137,11 +141,11 @@ pub fn add_authenticator(
     Ok(unsafe { (b.add)(opts as *const _, pp_response) })
 }
 
-/// Call `EXPERIMENTAL_WebAuthNPluginRemoveAuthenticator` with a
-/// null-terminated UTF-16 CLSID string.
-pub fn remove_authenticator(pwsz_plugin_cls_id: *const u16) -> Result<HRESULT, String> {
+/// Call `WebAuthNPluginRemoveAuthenticator` with a pointer to the CLSID
+/// GUID (REFCLSID).
+pub fn remove_authenticator(rclsid: *const Guid) -> Result<HRESULT, String> {
     let b = bindings().map_err(|s| s.to_string())?;
-    Ok(unsafe { (b.remove)(pwsz_plugin_cls_id) })
+    Ok(unsafe { (b.remove)(rclsid) })
 }
 
 /// Call `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. Safe to

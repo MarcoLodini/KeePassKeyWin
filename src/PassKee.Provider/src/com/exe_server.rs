@@ -359,11 +359,16 @@ where
     recv_result.expect("tokio task panicked — see logs")
 }
 
-/// CLSID of the PassKee plugin, in the wide-string form expected by the
-/// OLD-ABI `EXPERIMENTAL_WebAuthNPluginAddAuthenticator` (SDK 10.0.26100.0).
-/// Uppercase + brace-wrapped per COM convention.
+/// CLSID of the PassKee plugin as a Guid struct. Declared `static` (not
+/// `const`) so we can take its address — the options struct's `rclsid`
+/// field is `REFCLSID` (a pointer-to-GUID), not an inline GUID.
 #[cfg(windows)]
-const CLSID_STR: &str = "{D26BCF6F-B54C-43FF-9F06-D5BF148625F7}";
+static CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
+    data1: 0xd26b_cf6f,
+    data2: 0xb54c,
+    data3: 0x43ff,
+    data4: [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7],
+};
 
 /// Human-visible name shown in Settings → Accounts → Passkeys → Advanced.
 #[cfg(windows)]
@@ -448,35 +453,37 @@ pub fn cmd_register() -> Result<(), String> {
 
     // Keep all owned data alive for the duration of the FFI call.
     let name_w  = to_utf16_null(AUTHENTICATOR_DISPLAY_NAME);
-    let clsid_w = to_utf16_null(CLSID_STR);
     let rp_id_w = to_utf16_null(PLUGIN_RP_ID);
     let logo_w  = to_utf16_null(THEME_LOGO_SVG_B64);
     let info    = authenticator_get_info_cbor();
 
     let opts = WebauthnPluginAddAuthenticatorOptions {
-        pwsz_authenticator_name: name_w.as_ptr(),
-        pwsz_plugin_cls_id:      clsid_w.as_ptr(),
-        pwsz_plugin_rp_id:       rp_id_w.as_ptr(),
-        pwsz_light_theme_logo:   logo_w.as_ptr(),
-        pwsz_dark_theme_logo:    logo_w.as_ptr(),
-        cb_authenticator_info:   info.len() as u32,
-        pb_authenticator_info:   info.as_ptr(),
+        pwsz_authenticator_name:   name_w.as_ptr(),
+        rclsid:                    &CLSID_GUID as *const _,
+        pwsz_plugin_rp_id:         rp_id_w.as_ptr(),
+        pwsz_light_theme_logo_svg: logo_w.as_ptr(),
+        pwsz_dark_theme_logo_svg:  logo_w.as_ptr(),
+        cb_authenticator_info:     info.len() as u32,
+        pb_authenticator_info:     info.as_ptr(),
+        c_supported_rp_ids:        0,                    // 0 = support all RPs
+        ppwsz_supported_rp_ids:    std::ptr::null(),
     };
 
     // ── Diagnostic dump ──────────────────────────────────────────────────
-    // Prints the full state we're about to pass to webauthn.dll so when the
-    // call crashes we can see what was on the stack. If the runtime reads
-    // past our struct end, or mis-interprets a field, these values let us
-    // triangulate. Remove once registration is stable.
+    // Prints the full state we're about to pass to webauthn.dll. Useful if
+    // the struct is ever wrong again — previous iterations hit crashes
+    // only visible via this trace. Keep until Phase 2.2 validation
+    // succeeds end-to-end.
     let resolved_symbol = webauthn_ext::resolved_add_symbol_name().unwrap_or("<bindings not loaded>");
     eprintln!("[register] ==== diagnostic dump ====");
     eprintln!("[register] Resolved symbol: {resolved_symbol}");
-    eprintln!("[register] Struct size:     {} bytes", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
-    eprintln!("[register] name_w   (LPCWSTR): {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
-    eprintln!("[register] clsid_w  (LPCWSTR): {:p} wchars={} \"{CLSID_STR}\"",                  clsid_w.as_ptr(), clsid_w.len());
-    eprintln!("[register] rp_id_w  (LPCWSTR): {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
-    eprintln!("[register] logo_w   (LPCWSTR): {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
-    eprintln!("[register] info     (PBYTE):   {:p} cbAuthenticatorInfo={}B",                    info.as_ptr(), info.len());
+    eprintln!("[register] Struct size:     {} bytes (expected 72)", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
+    eprintln!("[register] name_w   (LPCWSTR):  {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
+    eprintln!("[register] rclsid   (REFCLSID): {:p} -> {{d26bcf6f-b54c-43ff-9f06-d5bf148625f7}}", &CLSID_GUID as *const _);
+    eprintln!("[register] rp_id_w  (LPCWSTR):  {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
+    eprintln!("[register] logo_w   (LPCWSTR):  {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
+    eprintln!("[register] info     (PBYTE):    {:p} cbAuthenticatorInfo={}B", info.as_ptr(), info.len());
+    eprintln!("[register] cSupportedRpIds=0 ppwszSupportedRpIds=NULL");
     eprintln!("[register] ==== calling ... ====");
     // Flush now — if we crash the buffered stderr may be lost.
     use std::io::Write;
@@ -526,8 +533,7 @@ pub fn cmd_unregister() -> Result<(), String> {
     const HR_NOT_FOUND:      u32 = 0x8007_0490;
     const HR_FILE_NOT_FOUND: u32 = 0x8007_0002;
 
-    let clsid_w = to_utf16_null(CLSID_STR);
-    let hr = webauthn_ext::remove_authenticator(clsid_w.as_ptr())?;
+    let hr = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _)?;
 
     match hr.0 as u32 {
         0 => {
