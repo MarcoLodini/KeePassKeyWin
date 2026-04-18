@@ -376,40 +376,9 @@ const CLSID_STR: &str = "{D26BCF6F-B54C-43FF-9F06-D5BF148625F7}";
 #[cfg(windows)]
 const AUTHENTICATOR_DISPLAY_NAME: &str = "PassKee";
 
-/// Build the minimal-but-valid CTAP2 `authenticatorGetInfo` CBOR response
-/// required by the WebAuthN plugin-provider registration API.
-///
-/// Advertises:
-///   1 (versions): ["FIDO_2_0"]
-///   3 (aaguid):   16 zero bytes (non-attesting — v1 non-goal)
-///   4 (options):  {"rk": true}   — PassKee stores credentials in the vault,
-///                                  so all credentials are resident by design.
-///
-/// All other fields (algorithms, transports, pinUvAuthProtocols, etc.) are
-/// deliberately omitted — CTAP2.1 §6.4 only requires `versions` + `aaguid`.
-/// Extending this later does NOT break existing registrations; Windows
-/// re-reads the blob on each register call.
-#[cfg(windows)]
-fn authenticator_get_info_cbor() -> Vec<u8> {
-    use ciborium::Value;
-
-    let versions = Value::Array(vec![Value::Text("FIDO_2_0".into())]);
-    let aaguid   = Value::Bytes(vec![0u8; 16]);
-    let options  = Value::Map(vec![
-        (Value::Text("rk".into()), Value::Bool(true)),
-    ]);
-
-    let info = Value::Map(vec![
-        (Value::Integer(1.into()), versions),
-        (Value::Integer(3.into()), aaguid),
-        (Value::Integer(4.into()), options),
-    ]);
-
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&info, &mut bytes)
-        .expect("authenticatorGetInfo CBOR encode");
-    bytes
-}
+// PASSKEE_AAGUID and authenticator_get_info_cbor() live in
+// `crate::com::authenticator_info` — cross-platform so Linux CI covers the
+// CBOR encoding. `cmd_register` imports them below.
 
 /// Convert a Rust `&str` to a null-terminated UTF-16 buffer suitable for
 /// passing as `LPCWSTR`. The returned `Vec<u16>` owns the data; the caller
@@ -433,6 +402,7 @@ fn to_utf16_null(s: &str) -> Vec<u16> {
 /// with the same CLSID update the existing registration.
 #[cfg(windows)]
 pub fn cmd_register() -> Result<(), String> {
+    use crate::com::authenticator_info::authenticator_get_info_cbor;
     use crate::com::types::WebauthnPluginAddAuthenticatorOptions;
     use crate::com::webauthn_ext;
 
@@ -479,8 +449,13 @@ pub fn cmd_register() -> Result<(), String> {
 pub fn cmd_unregister() -> Result<(), String> {
     use crate::com::webauthn_ext;
 
-    // HRESULT_FROM_WIN32(ERROR_NOT_FOUND) — treat as idempotent success.
-    const HR_NOT_FOUND: u32 = 0x8007_0490;
+    // Two HRESULTs encode the same semantic "no such registration":
+    //   0x80070490 = HRESULT_FROM_WIN32(ERROR_NOT_FOUND       = 1168)
+    //   0x80070002 = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND  = 2)
+    // The EXPERIMENTAL_ API returns the latter in practice — observed on
+    // build 26200.8037. Treat both as idempotent success.
+    const HR_NOT_FOUND:      u32 = 0x8007_0490;
+    const HR_FILE_NOT_FOUND: u32 = 0x8007_0002;
 
     let clsid_w = to_utf16_null(CLSID_STR);
     let hr = webauthn_ext::remove_authenticator(clsid_w.as_ptr())?;
@@ -490,8 +465,8 @@ pub fn cmd_unregister() -> Result<(), String> {
             println!("PassKee unregistered.");
             Ok(())
         }
-        HR_NOT_FOUND => {
-            eprintln!("[unregister] not currently registered (ERROR_NOT_FOUND) — treating as success.");
+        HR_NOT_FOUND | HR_FILE_NOT_FOUND => {
+            eprintln!("[unregister] not currently registered (0x{:08x}) — treating as success.", hr.0 as u32);
             Ok(())
         }
         code => Err(format!(
@@ -500,3 +475,4 @@ pub fn cmd_unregister() -> Result<(), String> {
         )),
     }
 }
+

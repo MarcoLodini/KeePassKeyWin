@@ -12,6 +12,9 @@ pub mod ipc;
 pub mod com {
     // Pure Rust repr(C) structs — compile everywhere for test coverage.
     pub mod types;
+    // Cross-platform: CTAP2 authenticatorGetInfo CBOR blob + AAGUID constant.
+    // Consumed by exe_server::cmd_register on Windows; covered by Linux CI tests.
+    pub mod authenticator_info;
     // Server implementation — imports windows-rs, Windows only.
     #[cfg(windows)]
     pub mod server;
