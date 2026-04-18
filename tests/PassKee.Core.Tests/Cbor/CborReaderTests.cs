@@ -319,12 +319,40 @@ namespace PassKee.Core.Tests.Cbor
             Assert.Throws<CborReaderException>(() => reader.SkipValue());
         }
 
-        [Fact]
-        public void FloatMajorType7_Throws()
+        [Theory]
+        [InlineData(0xF4)] // false
+        [InlineData(0xF5)] // true
+        [InlineData(0xF6)] // null
+        [InlineData(0xF7)] // undefined
+        public void SkipValue_SimpleValues_AreSkipped(byte b)
         {
-            // 0xF4 = major type 7, false (simple value)
-            var reader = new CborReader(new byte[] { 0xF4 });
+            // CTAP2 §6.1.1 options map uses false/true; tolerated by SkipValue
+            // so `options` can be ignored without parsing booleans.
+            var reader = new CborReader(new byte[] { b });
+            reader.SkipValue();
+            Assert.True(reader.IsAtEnd);
+        }
+
+        [Theory]
+        [InlineData(new byte[] { 0xF8, 0x20 })]               // MT7 AI 24 (1-byte simple value ext)
+        [InlineData(new byte[] { 0xF9, 0x00, 0x00 })]         // MT7 AI 25 (half float)
+        [InlineData(new byte[] { 0xFA, 0x00, 0x00, 0x00, 0x00 })] // MT7 AI 26 (single float)
+        public void SkipValue_MT7FloatsAndExt_Throw(byte[] bytes)
+        {
+            var reader = new CborReader(bytes);
             Assert.Throws<CborReaderException>(() => reader.SkipValue());
+        }
+
+        [Fact]
+        public void SkipValue_OptionsMapWithBools_IsSkipped()
+        {
+            // Regression for Session 6 Phase 3 failure: webauthn.io sends
+            // options as `{rk: true, uv: true}` (CBOR a2 62726b f5 627576 f5).
+            // SkipValue must tolerate it so we can ignore key 7.
+            var bytes = new byte[] { 0xa2, 0x62, 0x72, 0x6b, 0xf5, 0x62, 0x75, 0x76, 0xf5 };
+            var reader = new CborReader(bytes);
+            reader.SkipValue();
+            Assert.True(reader.IsAtEnd);
         }
 
         [Fact]

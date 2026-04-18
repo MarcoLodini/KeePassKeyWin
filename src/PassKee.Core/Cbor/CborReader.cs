@@ -171,8 +171,32 @@ namespace PassKee.Core.Cbor
                     break;
                 }
 
+                case 7:
+                    // Major type 7 carries CBOR simple values and floats.
+                    // CTAP2 uses it only for the 1-byte simple values
+                    // false (0xf4), true (0xf5), null (0xf6), undefined
+                    // (0xf7) — notably in the `options` map's rk/uv/up
+                    // booleans in authenticatorMakeCredential (CTAP 2.1
+                    // §6.1.1 key 7). Typed reads (ReadUnsignedInt et al)
+                    // keep rejecting MT7 because those readers can't
+                    // return a bool anyway; SkipValue is the only
+                    // tolerance point needed for now.
+                    //
+                    // AI 24 (1-byte extension simple value), 25-27 (half
+                    // / single / double float) are rejected — CTAP2
+                    // doesn't use them and admitting them expands attack
+                    // surface with no benefit. AI 28-31 were already
+                    // rejected by ValidateAdditionalInfo above.
+                    if (ai >= 20 && ai <= 23)
+                    {
+                        _pos++; // consume the single header byte; no payload
+                        break;
+                    }
+                    throw new CborReaderException(
+                        $"CBOR major type 7 with additional-info {ai} not supported at offset {_pos}.");
+
                 default:
-                    // Major types 6 (tags) and 7 (floats/simple) are rejected.
+                    // Major type 6 (tags) — not used by CTAP2.
                     throw new CborReaderException($"Unsupported major type {mt} at offset {_pos}.");
             }
         }
