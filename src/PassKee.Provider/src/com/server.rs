@@ -21,8 +21,19 @@ pub(crate) mod imp {
     use crate::com::types::{
         PluginLockStatus, WebauthNPluginCancelOperationRequest,
         WebauthNPluginOperationRequest, WebauthNPluginOperationResponse,
+        WebauthnPluginUserVerificationRequest,
     };
+    use crate::com::webauthn_ext;
     use crate::ipc::{ClientError, PipeClient};
+
+    /// E_ABORT HRESULT — user cancelled the UV prompt.
+    const E_ABORT: u32 = 0x8000_4004;
+    /// E_INVALIDARG HRESULT — best mapping for UnsupportedAlgorithm.
+    const E_INVALIDARG: u32 = 0x8007_0057;
+    /// ERROR_DUPLICATE_TAG HRESULT — best mapping for CredentialExcluded.
+    const E_CREDENTIAL_EXCLUDED: u32 = 0x8007_0216;
+    /// E_FAIL HRESULT — generic failure.
+    const E_FAIL: u32 = 0x8000_4005;
 
     // IID_IUnknown = {00000000-0000-0000-C000-000000000046}
     const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_C000_000000000046);
@@ -247,16 +258,68 @@ pub(crate) mod imp {
         let cbor_bytes = unsafe { req.encoded_request() };
         let cbor_b64 = base64::engine::general_purpose::STANDARD.encode(cbor_bytes);
 
+        // ── Step 1: extract UV prompt hint from CBOR ──────────────────────────
+        // For MakeCredential the CTAP2 request contains `user.name` (key 3).
+        // For GetAssertion (and any future operation) we fall back to "PassKee".
+        // A failed parse also falls back so a malformed CBOR still triggers UV
+        // and lets the C# side produce the proper error code.
+        let username_hint = extract_prompt_hint(cbor_bytes, method);
+
+        // UTF-16 owned buffers — kept alive across the UV call.
+        let username_w: Vec<u16> = username_hint.encode_utf16().chain(std::iter::once(0)).collect();
+        let display_hint_w: Vec<u16> = "PassKee\0".encode_utf16().collect();
+
+        // ── Step 2: call PerformUserVerification (inline on STA thread) ───────
+        // Windows pumps its own dialog messages internally. Do NOT wrap in
+        // sta_block_on — that's for async pipe I/O, not blocking UI calls.
+        let uv_request = WebauthnPluginUserVerificationRequest {
+            hwnd:              req.hwnd,
+            transaction_id:    req.transaction_id,
+            pwsz_username:     username_w.as_ptr(),
+            pwsz_display_hint: display_hint_w.as_ptr(),
+        };
+
+        let mut cb_uv_response: u32 = 0;
+        let mut pb_uv_response: *mut u8 = std::ptr::null_mut();
+
+        let uv_hr = match webauthn_ext::perform_user_verification(
+            &uv_request, &mut cb_uv_response, &mut pb_uv_response,
+        ) {
+            Ok(hr) => hr,
+            Err(_e) => {
+                // Bindings not loaded — shouldn't happen post-registration, but
+                // fail gracefully.
+                return HRESULT(E_FAIL as i32);
+            }
+        };
+
+        // Free the UV response on EVERY exit path from here on.
+        // We don't verify the UV signature (Phase 5 deferred — see MEMORY.md).
+        webauthn_ext::free_user_verification_response(pb_uv_response);
+        pb_uv_response = std::ptr::null_mut(); // prevent double-free if we add paths
+
+        if uv_hr.0 as u32 == E_ABORT {
+            // User cancelled the UV prompt — propagate E_ABORT to the caller.
+            return uv_hr;
+        }
+        if uv_hr.is_err() {
+            // Other UV failure — propagate.
+            return uv_hr;
+        }
+
+        // ── Step 3: UV succeeded — forward to the C# plugin via IPC ──────────
+        // Always pass `"uv": true` — UV failure would have aborted above.
+
         // Take pipe out of state, release lock before STA-pumping wait. Never
         // hold the state mutex across sta_block_on — doing so would deadlock
         // any re-entrant COM dispatch on the same STA thread.
         let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
         let mut pipe = match pipe_opt {
             Some(p) => p,
-            None => return HRESULT(0x8000_4005u32 as i32), // E_FAIL
+            None => return HRESULT(E_FAIL as i32),
         };
 
-        let params = serde_json::json!({ "cbor": cbor_b64 });
+        let params = serde_json::json!({ "cbor": cbor_b64, "uv": true });
         let method_owned = method.to_string();
         let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
             sta_block_on(async move {
@@ -270,7 +333,7 @@ pub(crate) mod imp {
             Ok(v) => {
                 let resp_b64 = match v["cbor"].as_str() {
                     Some(s) => s.to_owned(),
-                    None => return HRESULT(0x8000_4005u32 as i32),
+                    None => return HRESULT(E_FAIL as i32),
                 };
                 let resp_bytes = base64::engine::general_purpose::STANDARD
                     .decode(&resp_b64)
@@ -287,9 +350,109 @@ pub(crate) mod imp {
                 }
                 HRESULT(0)
             }
-            Err(ClientError::VaultLocked) => HRESULT(0x8007_0005u32 as i32), // E_ACCESSDENIED
-            Err(_) => HRESULT(0x8000_4005u32 as i32),
+            Err(ClientError::VaultLocked)         => HRESULT(0x8007_0005u32 as i32), // E_ACCESSDENIED
+            Err(ClientError::UnsupportedAlgorithm) => HRESULT(E_INVALIDARG as i32),
+            Err(ClientError::CredentialExcluded)   => HRESULT(E_CREDENTIAL_EXCLUDED as i32),
+            Err(_)                                 => HRESULT(E_FAIL as i32),
         }
+    }
+
+    /// Attempt to extract a user-visible prompt hint from the raw CBOR bytes.
+    ///
+    /// For `passkee.makeCredentialRaw` the bytes are a CTAP2 `authenticatorMakeCredential`
+    /// map (keys 1-9). Key 3 is `user`, whose `name` field becomes the UV prompt
+    /// username. On any parse failure — or for operations that don't carry a username
+    /// (GetAssertion) — returns `"PassKee"` as the fallback display string.
+    pub(crate) fn extract_prompt_hint(cbor_bytes: &[u8], _method: &str) -> String {
+        use passkey_types::ctap2::make_credential::Request as MakeCredentialRequest;
+        match ciborium::de::from_reader::<MakeCredentialRequest, _>(cbor_bytes) {
+            Ok(req) => req.user.name,
+            Err(_)  => "PassKee".to_string(),
+        }
+    }
+}
+
+// ── Cross-platform tests ──────────────────────────────────────────────────────
+
+// Note: the COM-method tests above test the types and const values.
+// Tests for extract_prompt_hint live here because they are cross-platform
+// (ciborium + passkey-types work on Linux) and the function itself is
+// declared inside the #[cfg(windows)] `imp` block — we expose it with
+// `pub(crate)` and cfg-gate the tests.
+
+#[cfg(test)]
+mod prompt_hint_tests {
+    #[cfg(windows)]
+    use super::imp::extract_prompt_hint;
+
+    /// Helper: encode a MakeCredential request with the given user.name and
+    /// return the CBOR bytes. Used to produce canonical test vectors without
+    /// hard-coding raw bytes.
+    #[cfg(windows)]
+    fn make_credential_cbor(user_name: &str) -> Vec<u8> {
+        use passkey_types::{
+            ctap2::make_credential::Request,
+            Bytes,
+            webauthn::{PublicKeyCredentialUserEntity, PublicKeyCredentialRpEntity,
+                        PublicKeyCredentialParameters, PublicKeyCredentialType},
+        };
+        use passkey_types::ctap2::make_credential::PublicKeyCredentialRpEntity as CtapRpEntity;
+        use coset::iana::Algorithm;
+
+        let req = Request {
+            client_data_hash: Bytes::from(vec![0u8; 32]),
+            rp: CtapRpEntity {
+                id: "example.com".to_string(),
+                name: Some("Example".to_string()),
+            },
+            user: PublicKeyCredentialUserEntity {
+                id: Bytes::from(vec![1u8, 2, 3]),
+                name: user_name.to_string(),
+                display_name: "Test User".to_string(),
+            },
+            pub_key_cred_params: vec![PublicKeyCredentialParameters {
+                ty: PublicKeyCredentialType::PublicKey,
+                alg: coset::iana::Algorithm::ES256,
+            }],
+            exclude_list: None,
+            extensions: None,
+            options: Default::default(),
+            pin_auth: None,
+            pin_protocol: None,
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&req, &mut buf).expect("cbor encode");
+        buf
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extract_hint_from_make_credential() {
+        let cbor = make_credential_cbor("alice@example.com");
+        assert_eq!(extract_prompt_hint(&cbor, "passkee.makeCredentialRaw"), "alice@example.com");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extract_hint_malformed_cbor_fallback() {
+        // A truncated / garbage CBOR blob should not panic and returns "PassKee".
+        let bad = b"\xff\x00\x01garbage";
+        assert_eq!(extract_prompt_hint(bad, "passkee.makeCredentialRaw"), "PassKee");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extract_hint_get_assertion_fallback() {
+        // GetAssertion CBOR is a different map shape — parsing as MakeCredential fails → "PassKee".
+        // Construct a minimal GetAssertion CBOR (key 1 = rpId string).
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(
+            &ciborium::value::Value::Map(vec![
+                (ciborium::value::Value::Integer(1.into()), ciborium::value::Value::Text("example.com".to_string())),
+            ]),
+            &mut buf,
+        ).unwrap();
+        assert_eq!(extract_prompt_hint(&buf, "passkee.getAssertionRaw"), "PassKee");
     }
 }
 

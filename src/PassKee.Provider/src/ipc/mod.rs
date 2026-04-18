@@ -26,10 +26,8 @@ pub enum ClientError {
     NoCredentials,
     #[error("handshake required or invalid")]
     ClientUnauthorized,
-    #[allow(dead_code)]
     #[error("unsupported algorithm")]
     UnsupportedAlgorithm,
-    #[allow(dead_code)]
     #[error("credential already registered")]
     CredentialExcluded,
     #[error("invalid request: {0}")]
@@ -45,6 +43,8 @@ impl ClientError {
         match code {
             -32010 => ClientError::VaultLocked,
             -32020 => ClientError::NoCredentials,
+            -32030 => ClientError::UnsupportedAlgorithm,
+            -32031 => ClientError::CredentialExcluded,
             -32000 | -32001 => ClientError::ClientUnauthorized,
             -32600 | -32602 => ClientError::InvalidRequest(message),
             -32603 => ClientError::Internal(message),
@@ -250,6 +250,18 @@ mod tests {
     fn error_mapping_unknown() {
         let e = ClientError::from_rpc(-99, "custom".into());
         assert!(matches!(e, ClientError::RpcError { code: -99, .. }));
+    }
+
+    #[test]
+    fn error_mapping_unsupported_algorithm() {
+        let e = ClientError::from_rpc(-32030, "alg not supported".into());
+        assert!(matches!(e, ClientError::UnsupportedAlgorithm));
+    }
+
+    #[test]
+    fn error_mapping_credential_excluded() {
+        let e = ClientError::from_rpc(-32031, "already registered".into());
+        assert!(matches!(e, ClientError::CredentialExcluded));
     }
 
     #[test]
