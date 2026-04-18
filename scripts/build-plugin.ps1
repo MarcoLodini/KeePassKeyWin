@@ -72,12 +72,34 @@ if (-not (Test-Path $pluginCsproj)) {
     throw "Project file not found: '$pluginCsproj'. Run this script from the repo root or a scripts\ subdirectory."
 }
 
+# Split Core and Plugin into separate `dotnet build` invocations to avoid the
+# \\wsl.localhost SMB/9P cache race that surfaces as CS0006 "Metadata file
+# 'PassKee.Core.dll' could not be found" when both projects build in one
+# MSBuild process on a WSL2 repo. Cross-process + Test-Path poll gives the
+# SMB layer time to surface the Core DLL before the Plugin consumes it.
+$passKeeCoreCsproj = Join-Path $repoRoot "src\PassKee.Core\PassKee.Core.csproj"
+$passKeeCoreDll    = Join-Path $repoRoot "src\PassKee.Core\bin\$Configuration\net48\PassKee.Core.dll"
+
+Write-Host "[build-plugin] Building PassKee.Core ($Configuration, net48)..."
+& dotnet build $passKeeCoreCsproj -f net48 -c $Configuration --nologo
+if ($LASTEXITCODE -ne 0) { throw "PassKee.Core build failed (exit $LASTEXITCODE)." }
+
+$coreDllDeadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $coreDllDeadline) {
+    if (Test-Path $passKeeCoreDll) { break }
+    Start-Sleep -Milliseconds 200
+}
+if (-not (Test-Path $passKeeCoreDll)) {
+    throw "PassKee.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows FS sync stall)."
+}
+
 Write-Host "[build-plugin] Building PassKee.Plugin ($Configuration, net48)..."
 $buildArgs = @(
     "build", $pluginCsproj,
     "-f", "net48",
     "-c", $Configuration,
     "/p:KeePassDir=$KeePassDir",
+    "--no-dependencies",
     "--nologo"
 )
 & dotnet @buildArgs

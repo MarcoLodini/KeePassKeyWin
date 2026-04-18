@@ -534,12 +534,43 @@ try {
 Write-Host ""
 Write-Host "[validator] --- Step 3: Build ---"
 
+# When the repo lives under \\wsl.localhost\... a single `dotnet build` of the
+# plugin races against SMB/9P cache coherence: PassKee.Core finishes writing
+# PassKee.Core.dll, the in-process MSBuild graph walker immediately moves to
+# the Plugin's csc task, and csc opens the path via the SMB redirector which
+# hasn't yet surfaced the new file (CS0006 "Metadata file could not be found").
+# Split the build into two separate `dotnet` invocations with a visibility
+# poll between them so the first process exits (flushing file handles) and
+# the SMB cache settles before the second process tries to reference the DLL.
+$passKeeCoreCsproj = Join-Path $repoRoot "src\PassKee.Core\PassKee.Core.csproj"
+$passKeeCoreDll    = Join-Path $repoRoot "src\PassKee.Core\bin\Release\net48\PassKee.Core.dll"
+
+Write-Host "[validator] Building PassKee.Core (net48, Release)..."
+& dotnet build $passKeeCoreCsproj -f net48 -c Release --nologo
+if ($LASTEXITCODE -ne 0) {
+    Fail "PassKee.Core build failed (exit $LASTEXITCODE)."
+}
+
+# Poll until Windows can see the freshly-written Core DLL. Test-Path forces a
+# metadata fetch that re-syncs the SMB cache, so this serves double duty as
+# "wait" and "refresh".
+$coreDllDeadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $coreDllDeadline) {
+    if (Test-Path $passKeeCoreDll) { break }
+    Start-Sleep -Milliseconds 200
+}
+if (-not (Test-Path $passKeeCoreDll)) {
+    Fail "PassKee.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows filesystem sync stall)."
+}
+Write-Host "[validator] PassKee.Core output visible: OK"
+
 Write-Host "[validator] Building PassKee.Plugin (net48, Release)..."
 $buildPluginArgs = @(
     "build", $pluginCsproj,
     "-f", "net48",
     "-c", "Release",
     "/p:KeePassDir=$KeePassDir",
+    "--no-dependencies",
     "--nologo"
 )
 & dotnet @buildPluginArgs
