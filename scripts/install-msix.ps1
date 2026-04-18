@@ -126,7 +126,10 @@ if ($pkg.Publisher -cne $expectedPublisher) {
 Write-Host "[install-msix] Publisher: OK ('$($pkg.Publisher)')"
 
 # Assert Version
-$pkgVersionStr = "$($pkg.Version.Major).$($pkg.Version.Minor).$($pkg.Version.Build).$($pkg.Version.Revision)"
+# $pkg.Version may be a PackageVersion struct (with .Major/.Minor/.Build/.Revision)
+# or a plain string ('0.0.1.0') depending on the Appx cmdlet version. ToString()
+# gives the dotted-decimal form in both cases, so we compare on that.
+$pkgVersionStr = $pkg.Version.ToString()
 if ($pkgVersionStr -ne $expectedVersion) {
     Write-Host "[install-msix] FAIL: Version mismatch." -ForegroundColor Red
     Write-Host "[install-msix]   Expected : $expectedVersion"
