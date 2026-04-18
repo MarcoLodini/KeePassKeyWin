@@ -118,8 +118,12 @@ Write-Host "[build-msix] Staging directory: $stagingDir"
 # ---------------------------------------------------------------------------
 # Copy files into staging
 # ---------------------------------------------------------------------------
-Copy-Item $manifestSrc (Join-Path $stagingDir 'Package.appxmanifest') -Force
-Write-Host "[build-msix] Staged: Package.appxmanifest"
+# makeappx expects the manifest to be named AppxManifest.xml inside the content
+# directory — Package.appxmanifest is the Visual Studio source-file convention,
+# which VS renames during its own packaging. Doing manual `makeappx pack` means
+# we rename here. See https://learn.microsoft.com/windows/msix/package/manual-packaging-root
+Copy-Item $manifestSrc (Join-Path $stagingDir 'AppxManifest.xml') -Force
+Write-Host "[build-msix] Staged: AppxManifest.xml (renamed from Package.appxmanifest)"
 
 Copy-Item $providerDll (Join-Path $stagingDir 'passkee_provider.dll') -Force
 Write-Host "[build-msix] Staged: passkee_provider.dll"
