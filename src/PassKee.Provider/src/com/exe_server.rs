@@ -359,27 +359,9 @@ where
     recv_result.expect("tokio task panicked — see logs")
 }
 
-/// CLSID of the PassKee plugin, as inline 16-byte GUID — what the newer
-/// `WebAuthNPluginAddAuthenticator` struct expects (`rclsid` field). An
-/// earlier revision of this code passed it as a wide string (LPCWSTR per
-/// the SDK 10.0.26100.0 header); the runtime DLL on Win11 25H2 uses the
-/// updated ABI with an inline GUID, and the string form was read as 16
-/// bytes of UTF-16 → NTE_INVALID_PARAMETER.
-#[cfg(windows)]
-const CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
-    data1: 0xd26b_cf6f,
-    data2: 0xb54c,
-    data3: 0x43ff,
-    data4: [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7],
-};
-
-/// CLSID of the PassKee plugin in the wide-string form used by
-/// `WebAuthNPluginRemoveAuthenticator`. The Remove API appears to still
-/// take a CLSID string (its signature in the SDK 10.0.26100.0 header is
-/// `LPCWSTR pwszPluginClsId`), and Marco's first unregister attempt
-/// returned `ERROR_FILE_NOT_FOUND` rather than `NTE_INVALID_PARAMETER`
-/// — so the string is being parsed correctly by this path.
-/// Uppercase + brace-wrapped to match COM-typical convention.
+/// CLSID of the PassKee plugin, in the wide-string form expected by the
+/// OLD-ABI `EXPERIMENTAL_WebAuthNPluginAddAuthenticator` (SDK 10.0.26100.0).
+/// Uppercase + brace-wrapped per COM convention.
 #[cfg(windows)]
 const CLSID_STR: &str = "{D26BCF6F-B54C-43FF-9F06-D5BF148625F7}";
 
@@ -394,6 +376,18 @@ const AUTHENTICATOR_DISPLAY_NAME: &str = "PassKee";
 /// never be mistaken for a registered public suffix.
 #[cfg(windows)]
 const PLUGIN_RP_ID: &str = "passkee.local";
+
+/// Minimal valid base64-encoded SVG 1.1 for the theme-logo fields.
+/// The SDK header marks `pwszLightThemeLogo` / `pwszDarkThemeLogo` as
+/// "Optional", but the Microsoft PasskeyManager reference sample always
+/// passes non-null base64 SVG here — and the runtime rejects null with
+/// an opaque `NTE_INVALID_PARAMETER`. Same logo for both themes is fine;
+/// Phase 3 can bundle a proper PassKee brand icon.
+///
+/// Decodes to: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>`
+#[cfg(windows)]
+const THEME_LOGO_SVG_B64: &str =
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIvPg==";
 
 // PASSKEE_AAGUID and authenticator_get_info_cbor() live in
 // `crate::com::authenticator_info` — cross-platform so Linux CI covers the
@@ -427,19 +421,19 @@ pub fn cmd_register() -> Result<(), String> {
 
     // Keep all owned data alive for the duration of the FFI call.
     let name_w  = to_utf16_null(AUTHENTICATOR_DISPLAY_NAME);
+    let clsid_w = to_utf16_null(CLSID_STR);
     let rp_id_w = to_utf16_null(PLUGIN_RP_ID);
+    let logo_w  = to_utf16_null(THEME_LOGO_SVG_B64);
     let info    = authenticator_get_info_cbor();
 
     let opts = WebauthnPluginAddAuthenticatorOptions {
-        pwsz_authenticator_name:   name_w.as_ptr(),
-        rclsid:                    CLSID_GUID,
-        pwsz_plugin_rp_id:         rp_id_w.as_ptr(),
-        pwsz_light_theme_logo_svg: std::ptr::null(),
-        pwsz_dark_theme_logo_svg:  std::ptr::null(),
-        cb_authenticator_info:     info.len() as u32,
-        pb_authenticator_info:     info.as_ptr(),
-        c_supported_rp_ids:        0,
-        ppwsz_supported_rp_ids:    std::ptr::null(),
+        pwsz_authenticator_name: name_w.as_ptr(),
+        pwsz_plugin_cls_id:      clsid_w.as_ptr(),
+        pwsz_plugin_rp_id:       rp_id_w.as_ptr(),
+        pwsz_light_theme_logo:   logo_w.as_ptr(),
+        pwsz_dark_theme_logo:    logo_w.as_ptr(),
+        cb_authenticator_info:   info.len() as u32,
+        pb_authenticator_info:   info.as_ptr(),
     };
 
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse

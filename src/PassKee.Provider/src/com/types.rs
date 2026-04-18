@@ -119,39 +119,37 @@ pub const IID_IPLUGIN_AUTHENTICATOR: Guid = Guid {
 // revisions; re-verify on every SDK bump. No version constant exists at the
 // struct level (unlike many other windows-sdk plugin APIs).
 
-/// Maps to `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS` in the newer SDK
-/// shape (10.0.26100.7175+) — what Windows 11 25H2 (build 26200.x) actually
-/// expects at runtime, even when invoked via the legacy `EXPERIMENTAL_`
-/// symbol. The older shape (`pwszPluginClsId: LPCWSTR`, no logo `Svg`
-/// suffix, no `SupportedRpIds`) shipped in SDK 10.0.26100.0 but the runtime
-/// DLL was updated out-of-band; passing the old shape produces an opaque
-/// 0x80090027 NTE_INVALID_PARAMETER because the runtime reinterprets our
-/// string pointer as inline GUID bytes.
+/// Maps to `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS` as
+/// declared in Marco's SDK 10.0.26100.0. The field `pwszPluginClsId` is a
+/// `LPCWSTR` (wide string pointer), not an inline `GUID`. An earlier
+/// revision of this struct assumed the NEWER SDK shape (inline GUID + Svg
+/// suffixes + SupportedRpIds fields) based on the Microsoft PasskeyManager
+/// reference sample — that caused a STATUS_ACCESS_VIOLATION on Marco's
+/// Win11 25H2 build because the runtime DLL is still the OLD-ABI version:
+/// it read our 16 GUID bytes as a `pwszPluginClsId` pointer and
+/// dereferenced `0x43ffb54cd26bcf6f`. Diagnostic: the OLD shape returned
+/// a clean `NTE_INVALID_PARAMETER` (validation error), the NEW shape
+/// crashed — only the OLD ABI fits this runtime.
 ///
-/// x64 layout (80 bytes):
-///   offset 0:  pwsz_authenticator_name    (ptr, 8)
-///   offset 8:  rclsid                     (Guid, 16 — inline, NOT a pointer)
-///   offset 24: pwsz_plugin_rp_id          (ptr, 8)   // required by runtime even though doc says "optional"
-///   offset 32: pwsz_light_theme_logo_svg  (ptr, 8)   // optional base64 SVG 1.1
-///   offset 40: pwsz_dark_theme_logo_svg   (ptr, 8)   // optional base64 SVG 1.1
-///   offset 48: cb_authenticator_info      (u32, 4)
+/// x64 layout (56 bytes):
+///   offset 0:  pwsz_authenticator_name  (ptr, 8)
+///   offset 8:  pwsz_plugin_cls_id       (ptr, 8)
+///   offset 16: pwsz_plugin_rp_id        (ptr, 8)   // runtime-required despite "Optional" in doc
+///   offset 24: pwsz_light_theme_logo    (ptr, 8)   // runtime-required despite "Optional" — empirical
+///   offset 32: pwsz_dark_theme_logo     (ptr, 8)   // same
+///   offset 40: cb_authenticator_info    (u32, 4)
 ///   [4 bytes padding for pointer alignment]
-///   offset 56: pb_authenticator_info      (ptr, 8)   // CTAP CBOR authenticatorGetInfo
-///   offset 64: c_supported_rp_ids         (u32, 4)
-///   [4 bytes padding for pointer alignment]
-///   offset 72: ppwsz_supported_rp_ids     (ptr, 8)
-///   total:     80 bytes
+///   offset 48: pb_authenticator_info    (ptr, 8)
+///   total:     56 bytes
 #[repr(C)]
 pub struct WebauthnPluginAddAuthenticatorOptions {
-    pub pwsz_authenticator_name:   *const u16,
-    pub rclsid:                    Guid,
-    pub pwsz_plugin_rp_id:         *const u16,
-    pub pwsz_light_theme_logo_svg: *const u16,
-    pub pwsz_dark_theme_logo_svg:  *const u16,
-    pub cb_authenticator_info:     u32,
-    pub pb_authenticator_info:     *const u8,
-    pub c_supported_rp_ids:        u32,
-    pub ppwsz_supported_rp_ids:    *const *const u16,
+    pub pwsz_authenticator_name: *const u16,
+    pub pwsz_plugin_cls_id:      *const u16,
+    pub pwsz_plugin_rp_id:       *const u16,
+    pub pwsz_light_theme_logo:   *const u16,
+    pub pwsz_dark_theme_logo:    *const u16,
+    pub cb_authenticator_info:   u32,
+    pub pb_authenticator_info:   *const u8,
 }
 
 /// Maps to `EXPERIMENTAL_WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_RESPONSE`.
@@ -251,10 +249,13 @@ mod abi_tests {
 
     #[test]
     fn add_authenticator_options_size() {
-        // Newer SDK layout (10.0.26100.7175+):
-        //   ptr(8) + Guid(16) + 3×ptr(24) + u32(4)+pad(4) + ptr(8) + u32(4)+pad(4) + ptr(8) = 80
+        // OLD-ABI (SDK 10.0.26100.0) layout, 7 fields:
+        //   5×ptr(8) + u32(4) + pad(4) + ptr(8) = 56 on x64
+        //   5×ptr(4) + u32(4) + ptr(4)          = 28 on x86
         #[cfg(target_pointer_width = "64")]
-        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorOptions>(), 80);
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorOptions>(), 56);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginAddAuthenticatorOptions>(), 28);
     }
 
     #[test]
@@ -262,14 +263,12 @@ mod abi_tests {
         assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_authenticator_name), 0);
         #[cfg(target_pointer_width = "64")]
         {
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, rclsid),                    8);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_plugin_rp_id),         24);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_light_theme_logo_svg), 32);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_dark_theme_logo_svg),  40);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, cb_authenticator_info),     48);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pb_authenticator_info),     56);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, c_supported_rp_ids),        64);
-            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, ppwsz_supported_rp_ids),    72);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_plugin_cls_id),    8);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_plugin_rp_id),     16);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_light_theme_logo), 24);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pwsz_dark_theme_logo),  32);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, cb_authenticator_info), 40);
+            assert_eq!(offset_of!(WebauthnPluginAddAuthenticatorOptions, pb_authenticator_info), 48);
         }
     }
 
