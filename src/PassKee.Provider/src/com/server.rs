@@ -252,33 +252,34 @@ pub(crate) mod imp {
         method: &str,
     ) -> HRESULT {
         use base64::Engine;
+        use std::io::Write;
+
+        // Local convenience: stderr-flushed trace line. Because the console
+        // stays open for the COM-activated EXE lifetime, these are visible
+        // live during a browser flow — the cheapest path to observability
+        // pre-Phase-3-E2E. Remove or demote to `tracing` once stable.
+        macro_rules! dbg_step { ($($arg:tt)*) => {{
+            eprintln!("[dispatch] {}", format_args!($($arg)*));
+            let _ = std::io::stderr().flush();
+        }} }
 
         let obj = unsafe { &*this };
         let req = unsafe { &*request };
         let cbor_bytes = unsafe { req.encoded_request() };
         let cbor_b64 = base64::engine::general_purpose::STANDARD.encode(cbor_bytes);
 
+        dbg_step!("ENTRY method={method} cbor_len={} request_type={:?} cb_sig={}",
+                  cbor_bytes.len(), req.request_type, req.cb_request_signature);
+
         // ── Step 1: extract UV prompt hint from CBOR ──────────────────────────
-        // For MakeCredential the CTAP2 request contains `user.name` (key 3).
-        // For GetAssertion (and any future operation) we fall back to "PassKee".
-        // A failed parse also falls back so a malformed CBOR still triggers UV
-        // and lets the C# side produce the proper error code.
         let username_hint = extract_prompt_hint(cbor_bytes, method);
+        dbg_step!("extract_prompt_hint -> \"{username_hint}\"");
 
         // UTF-16 owned buffers — kept alive across the UV call.
         let username_w: Vec<u16> = username_hint.encode_utf16().chain(std::iter::once(0)).collect();
         let display_hint_w: Vec<u16> = "PassKee\0".encode_utf16().collect();
 
         // ── Step 2: call PerformUserVerification (inline on STA thread) ───────
-        // Windows pumps its own dialog messages internally. Do NOT wrap in
-        // sta_block_on — that's for async pipe I/O, not blocking UI calls.
-        //
-        // p_transaction_id is REFGUID (pointer), NOT inline. We take the
-        // address of the transactionId field on the incoming operation
-        // request; `req` is a `&WebauthNPluginOperationRequest` owned by
-        // webauthn.dll for the duration of this COM call, so the pointer
-        // is valid until we return. See the `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST`
-        // doc comment in types.rs for the Session 6 crash archaeology.
         let uv_request = WebauthnPluginUserVerificationRequest {
             hwnd:              req.hwnd,
             p_transaction_id:  &req.transaction_id as *const _,
@@ -289,49 +290,49 @@ pub(crate) mod imp {
         let mut cb_uv_response: u32 = 0;
         let mut pb_uv_response: *mut u8 = std::ptr::null_mut();
 
+        dbg_step!("UV call ...");
         let uv_hr = match webauthn_ext::perform_user_verification(
             &uv_request, &mut cb_uv_response, &mut pb_uv_response,
         ) {
             Ok(hr) => hr,
-            Err(_e) => {
-                // Bindings not loaded — shouldn't happen post-registration, but
-                // fail gracefully.
+            Err(e) => {
+                dbg_step!("UV bindings FAILED: {e}");
                 return HRESULT(E_FAIL as i32);
             }
         };
+        dbg_step!("UV returned hr=0x{:08x} cb_response={cb_uv_response}", uv_hr.0 as u32);
 
         // Free the UV response on EVERY exit path from here on.
-        // We don't verify the UV signature (Phase 5 deferred — see MEMORY.md).
         webauthn_ext::free_user_verification_response(pb_uv_response);
 
         if uv_hr.0 as u32 == E_ABORT {
-            // User cancelled the UV prompt — propagate E_ABORT to the caller.
+            dbg_step!("UV cancelled by user, returning E_ABORT");
             return uv_hr;
         }
         if uv_hr.is_err() {
-            // Other UV failure — propagate.
+            dbg_step!("UV error, propagating hr=0x{:08x}", uv_hr.0 as u32);
             return uv_hr;
         }
 
         // ── Step 3: UV succeeded — forward to the C# plugin via IPC ──────────
-        // Always pass `"uv": true` — UV failure would have aborted above.
-
-        // Take pipe out of state, release lock before STA-pumping wait. Never
-        // hold the state mutex across sta_block_on — doing so would deadlock
-        // any re-entrant COM dispatch on the same STA thread.
         let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
         let mut pipe = match pipe_opt {
-            Some(p) => p,
-            None => return HRESULT(E_FAIL as i32),
+            Some(p) => { dbg_step!("pipe taken from state"); p }
+            None => {
+                dbg_step!("pipe MISSING from state (plugin likely not connected) — returning E_FAIL");
+                return HRESULT(E_FAIL as i32);
+            }
         };
 
         let params = serde_json::json!({ "cbor": cbor_b64, "uv": true });
         let method_owned = method.to_string();
+        dbg_step!("RPC call {method} (cbor {}B) ...", cbor_bytes.len());
         let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
             sta_block_on(async move {
                 let r = pipe.call(&method_owned, params).await;
                 (r, pipe)
             });
+        dbg_step!("RPC returned");
 
         obj.state.lock().unwrap().pipe = Some(pipe_back);
 
@@ -339,14 +340,19 @@ pub(crate) mod imp {
             Ok(v) => {
                 let resp_b64 = match v["cbor"].as_str() {
                     Some(s) => s.to_owned(),
-                    None => return HRESULT(E_FAIL as i32),
+                    None => {
+                        dbg_step!("RPC ok but response missing 'cbor' string; returning E_FAIL. value={v}");
+                        return HRESULT(E_FAIL as i32);
+                    }
                 };
                 let resp_bytes = base64::engine::general_purpose::STANDARD
                     .decode(&resp_b64)
                     .unwrap_or_default();
+                dbg_step!("response cbor {}B decoded from base64", resp_bytes.len());
 
                 let buf = unsafe { CoTaskMemAlloc(resp_bytes.len()) as *mut u8 };
                 if buf.is_null() {
+                    dbg_step!("CoTaskMemAlloc FAILED");
                     return HRESULT(0x8007_000Eu32 as i32); // E_OUTOFMEMORY
                 }
                 unsafe {
@@ -354,12 +360,13 @@ pub(crate) mod imp {
                     (*response).cb_encoded_response = resp_bytes.len() as u32;
                     (*response).pb_encoded_response = buf;
                 }
+                dbg_step!("DONE ok — returning S_OK with {}B to webauthn.dll", resp_bytes.len());
                 HRESULT(0)
             }
-            Err(ClientError::VaultLocked)         => HRESULT(0x8007_0005u32 as i32), // E_ACCESSDENIED
-            Err(ClientError::UnsupportedAlgorithm) => HRESULT(E_INVALIDARG as i32),
-            Err(ClientError::CredentialExcluded)   => HRESULT(E_CREDENTIAL_EXCLUDED as i32),
-            Err(_)                                 => HRESULT(E_FAIL as i32),
+            Err(ref e @ ClientError::VaultLocked)         => { dbg_step!("RPC err: {e:?} -> E_ACCESSDENIED"); HRESULT(0x8007_0005u32 as i32) }
+            Err(ref e @ ClientError::UnsupportedAlgorithm) => { dbg_step!("RPC err: {e:?} -> E_INVALIDARG");  HRESULT(E_INVALIDARG as i32) }
+            Err(ref e @ ClientError::CredentialExcluded)   => { dbg_step!("RPC err: {e:?} -> E_CREDENTIAL_EXCLUDED"); HRESULT(E_CREDENTIAL_EXCLUDED as i32) }
+            Err(ref e)                                     => { dbg_step!("RPC err: {e:?} -> E_FAIL"); HRESULT(E_FAIL as i32) }
         }
     }
 
