@@ -65,12 +65,17 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [x] Sideload MSIX → `scripts/install-msix.ps1` asserts `Get-AppxPackage` Publisher / Version / PackageFamilyName
 
 **Phase 2.2 — Activation + COM live path** (deferred to next session):
-- [ ] `WebAuthNPluginAddAuthenticator` call on first activation (new `passkee-provider.exe add-authenticator` subcommand)
+
+> **Architecture pivot (discovered Session 3):** the Windows Plugin Authenticator API activates providers **out-of-process** via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via a DLL. Two independent sources confirmed: (1) MSIX `%ProgramFiles%\WindowsApps\…` ACLs block in-proc DLL loads from outside the package (documented on `com4:Extension`); (2) Microsoft's PasskeyManager reference sample uses `com:ExeServer`. Phase 2b's in-proc DLL work (`src/com/dll.rs` — `DllGetClassObject` etc.) is the wrong activation pattern and becomes unused dead code. Phase 2.2 moves the class factory into the EXE.
+
+- [ ] Add `-PluginActivated` arg handling in `passkee-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages until `CoResumeClassObjects` unwinds
+- [ ] Move `IPluginAuthenticatorImpl` / vtable from `src/com/dll.rs` + `src/com/server.rs` into the EXE binary (or keep in `lib.rs` with conditional export)
+- [ ] `WebAuthNPluginAddAuthenticator` call — new subcommand (e.g. `passkee-provider.exe register`) that the user runs once post-install
 - [ ] Verify Settings → Accounts → Passkeys → Advanced options lists the provider
-- [ ] STA-blocking-pipe-connect fix in `cf_create_instance` (eager COM object, lazy pipe connect on first MakeCredential)
-- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake under live COM activation)
-- [ ] Runtime vtable validation: attach debugger, confirm `IPluginAuthenticator` method slots match production offsets
+- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake) under the out-of-proc EXE — different token context than an in-proc DLL, re-validate pipe ACL + HKCU access
+- [ ] Runtime vtable validation: attach debugger to the activated EXE, confirm `IPluginAuthenticator` method slots match production offsets
 - [ ] Tighten `WebauthNPluginOperationResponse` offset assertions in `src/com/types.rs` (currently `size >= 12` only)
+- [ ] Drop the now-dead `passkee_provider.dll` cdylib from the MSIX staging (the manifest no longer references it; keep or remove is a Phase 2.2 hygiene choice)
 
 ## Phase 3 — End-to-end `MakeCredential`
 

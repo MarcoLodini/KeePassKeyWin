@@ -282,13 +282,21 @@ Remove-Item "Cert:\LocalMachine\TrustedPeople\$tp"
 
 ### Known deferred (Phase 2.2)
 
+> **Architecture pivot, Session 3:** the manifest registers `passkee-provider.exe`
+> as an out-of-process (`com:ExeServer`) COM server, matching the Microsoft
+> PasskeyManager reference sample. In-process DLL activation was our original
+> plan but is blocked at runtime by `%ProgramFiles%\WindowsApps\…` ACLs. Phase 2.2
+> moves the COM class factory from the DLL (`src/com/dll.rs`) into the EXE's
+> `main()` and wires `-PluginActivated` argument handling.
+
+- **EXE-side COM class factory + `-PluginActivated` handler** must be written.
+  Until that lands, `CoCreateInstance` on our CLSID will spawn the EXE but
+  the EXE won't register its class factory — activation will time out.
 - **`WebAuthNPluginAddAuthenticator`** has no call site yet — the MSIX
   installs cleanly but PassKee will **not** appear in Settings → Accounts →
   Passkeys → Advanced options until that API is wired.
-- **STA-blocking pipe connect** in `cf_create_instance` (`src/PassKee.Provider/src/com/dll.rs`)
-  — will deadlock or timeout on first live COM activation. Deferred because
-  Phase 2.1 stops before activation.
-- **Runtime vtable validation** via debug-attach.
+- **Runtime vtable validation** via debug-attach (now against the EXE, not
+  the DLL).
 
 ---
 

@@ -21,9 +21,8 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
-  xmlns:com2="http://schemas.microsoft.com/appx/manifest/com/windows10/2"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap com com2 rescap">
+  IgnorableNamespaces="uap com rescap">
 
   <!-- ── Identity ─────────────────────────────────────────────────────────── -->
   <Identity
@@ -77,33 +76,46 @@
 
       <Extensions>
         <!--
-          COM in-process server registration.
+          COM out-of-process server registration.
 
-          CLSID  = IPluginAuthenticator IID = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
-          The Windows WebAuthn API resolves the COM server by this CLSID.
+          CLSID = IPluginAuthenticator IID = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+          The Windows WebAuthn host resolves the provider by this CLSID via
+          CLSCTX_LOCAL_SERVER (out-of-process), not CLSCTX_INPROC_SERVER.
 
-          ThreadingModel: STA — matches the IPluginAuthenticator contract.
+          Why ExeServer, not InProcessServer:
+            1. MSIX packages install to %ProgramFiles%\WindowsApps\<pkg>\ which
+               has ACLs that prevent non-package processes from loading DLLs
+               out-of-band. See com4:Extension Remarks: "in-process servers...
+               intended for use only by packages with external location".
+            2. The Microsoft PasskeyManager sample (the official reference
+               implementation of a plugin passkey provider) uses com:ExeServer.
+            3. The Plugin Authenticator API activates the provider via standard
+               out-of-process COM; the EXE hosts an STA class factory for the
+               duration of the activation.
 
-          Namespace choice: the base 'com' namespace's ComServer element only
-          accepts out-of-process servers (ExeServer, SurrogateServer,
-          TreatAsClass, ProgId). The 'com2' namespace (windows10/2, available
-          since Win10 1703) adds InProcessServer as a valid child of
-          com2:ComServer — that's what we need for a DLL-hosted COM server.
+          Single executable (passkee-provider.exe) serves two roles:
+            - Regular launch: CLI smoke tests (no args, or `smoke`, etc.)
+            - COM activation: Windows passes `-PluginActivated` — EXE enters
+              class-factory mode and registers the IPluginAuthenticator impl
+              on an STA before pumping messages. (Class-factory wiring lands
+              in Phase 2.2; Phase 2.1 only proves the MSIX registers cleanly.)
 
-          Schema refs:
-            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com2-inprocessserver
-            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com2-comserver
-            https://learn.microsoft.com/windows/win32/com/single-threaded-apartments
+          Refs:
+            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com-exeserver
+            https://learn.microsoft.com/samples/microsoft/windows-classic-samples/passkeymanager/
         -->
-        <com2:Extension Category="windows.comServer">
-          <com2:ComServer>
-            <com2:InProcessServer Path="passkee_provider.dll">
-              <com2:Class
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer
+                Executable="passkee-provider.exe"
+                Arguments="-PluginActivated"
+                DisplayName="PassKee Passkey Provider">
+              <com:Class
                 Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
-                ThreadingModel="STA" />
-            </com2:InProcessServer>
-          </com2:ComServer>
-        </com2:Extension>
+                DisplayName="PassKee Passkey Provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
       </Extensions>
     </Application>
   </Applications>
