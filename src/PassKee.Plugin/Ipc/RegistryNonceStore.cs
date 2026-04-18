@@ -42,13 +42,13 @@ namespace PassKee.Plugin.Ipc
             bool match = string.Equals(nonce, _nonce, StringComparison.OrdinalIgnoreCase);
             if (match)
             {
-                _nonce = null;
-                try
-                {
-                    using var key = Registry.CurrentUser.OpenSubKey(RegPath, writable: true);
-                    key?.DeleteValue(RegValue, throwOnMissingValue: false);
-                }
-                catch { }
+                // Rotate: single-use consumed, immediately issue a FRESH nonce
+                // for the next sidecar activation. Without rotation only the
+                // first sidecar activation per plugin lifetime would
+                // authenticate — the COM server is re-activated on every
+                // browser request and each activation gets a new pipe
+                // connection, each needing its own handshake.
+                Initialize();
             }
             return match;
         }

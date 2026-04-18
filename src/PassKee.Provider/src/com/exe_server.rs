@@ -126,14 +126,52 @@ pub(crate) mod imp {
     unsafe extern "system" fn cf_create_instance(
         this: *mut ClassFactory, _outer: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void,
     ) -> HRESULT {
+        use std::io::Write;
+        macro_rules! dbg_step { ($($arg:tt)*) => {{
+            eprintln!("[activate] {}", format_args!($($arg)*));
+            let _ = std::io::stderr().flush();
+        }} }
+
         let session_id = unsafe { (*this).session_id };
+        dbg_step!("cf_create_instance session_id={session_id}");
 
         // Pull the shared runtime. Panic is intentional — only reachable after
         // run_com_server has populated RT.
         let runtime = RT.get().expect("runtime uninitialised").clone();
 
-        // Connect the pipe once per authenticator activation.
-        let pipe = runtime.block_on(crate::ipc::PipeClient::connect(session_id)).ok();
+        // Connect the pipe AND complete the passkee.hello handshake before
+        // handing the authenticator object to the caller. The plugin-side
+        // RpcDispatcher rejects every non-`passkee.hello` method until the
+        // per-connection ConnectionContext has HandshakeComplete=true, so
+        // without this we can't dispatch anything.
+        //
+        // Concurrency note: the HKCU nonce is read by THIS activation, then
+        // consumed + rotated by the plugin on our handshake call. If two
+        // browser registrations activate two sidecars concurrently, both
+        // read the same nonce; the first handshake wins, the second gets
+        // HandshakeInvalid and drops the pipe. Not a v1 concern — browsers
+        // don't register concurrently. Documented in MEMORY.md.
+        let pipe = runtime.block_on(async {
+            let mut p = match crate::ipc::PipeClient::connect(session_id).await {
+                Ok(p)  => { dbg_step!("pipe connect OK"); p }
+                Err(e) => { dbg_step!("pipe connect FAILED: {e}"); return None; }
+            };
+            let nonce = match read_handshake_nonce() {
+                Some(n) => {
+                    let prefix: String = n.chars().take(8).collect();
+                    dbg_step!("read nonce from HKCU: \"{prefix}...\" ({} chars)", n.len());
+                    n
+                }
+                None => {
+                    dbg_step!("read nonce FAILED — HKCU\\Software\\PassKee\\HandshakeNonce missing");
+                    return None;
+                }
+            };
+            match p.handshake(PASSKEE_PKG_FAMILY, &nonce).await {
+                Ok(())  => { dbg_step!("handshake OK"); Some(p) }
+                Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
+            }
+        });
 
         let state = Arc::new(Mutex::new(PasskeeAuthenticatorState { session_id, pipe }));
         let obj = IPluginAuthenticatorImpl::new(state);
@@ -151,6 +189,51 @@ pub(crate) mod imp {
             unsafe { CoReleaseServerProcess() };
         }
         hr
+    }
+
+    /// Our MSIX package family name. Must match
+    /// `PassKee.Core.Ipc.HandshakeHandler.ExpectedPkgFamily` on the C# side
+    /// — the plugin rejects handshakes from any other PFN. If the package
+    /// publisher identity ever changes this constant and the C# constant
+    /// MUST be updated in lockstep.
+    pub(crate) const PASSKEE_PKG_FAMILY: &str = "PassKee.Provider_rh4edrm0by30m";
+
+    /// Read the current handshake nonce from
+    /// `HKCU\Software\PassKee\HandshakeNonce`. The plugin writes it on
+    /// startup and rotates on each successful consume. Returns `None` on
+    /// any error (missing key, wrong type, registry failure) — the caller
+    /// treats a missing nonce the same as a handshake failure.
+    pub(crate) fn read_handshake_nonce() -> Option<String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Registry::{
+            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ,
+        };
+
+        let sub_key: Vec<u16>    = "Software\\PassKee\0".encode_utf16().collect();
+        let value_name: Vec<u16> = "HandshakeNonce\0".encode_utf16().collect();
+
+        // Nonce is 64 hex chars + null = 130 bytes. 512 is plenty.
+        let mut buf: [u16; 256] = [0u16; 256];
+        let mut cb: u32 = (buf.len() * 2) as u32;
+
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(sub_key.as_ptr()),
+                PCWSTR(value_name.as_ptr()),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr() as *mut _),
+                Some(&mut cb),
+            )
+        };
+        if status.is_err() {
+            return None;
+        }
+        // cb is bytes written including the trailing UTF-16 null.
+        let wchars = (cb as usize) / 2;
+        let end = buf[..wchars].iter().position(|&c| c == 0).unwrap_or(wchars);
+        String::from_utf16(&buf[..end]).ok()
     }
 
     unsafe extern "system" fn cf_lock_server(_this: *mut ClassFactory, lock: i32) -> HRESULT {
