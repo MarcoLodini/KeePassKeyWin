@@ -22,6 +22,27 @@ All build and harness commands run in a **PowerShell 7** prompt opened from the 
 
 ---
 
+## Unattended validator (Steps 1–5 + 7)
+
+If you just want to confirm Phase 0.5 end-to-end without running through each
+step by hand, run the consolidated validator:
+
+```powershell
+.\scripts\validate-phase05.ps1
+```
+
+It pre-flights prerequisites, builds + installs the plugin, creates a throwaway
+vault from `scripts\fixtures\template.kdbx`, launches KeePass + a headless
+Chrome instance (smoke mode still needs a CDP target — see caveat under Step 5),
+runs the smoke test, verifies nonce teardown, and reports `PASS` / `FAIL: <reason>`
+with a diagnostic bundle. It does **not** cover Step 6 (browser scenario with
+webauthn.io) — that still requires manual gestures; run the steps below for that.
+
+Use `-DryRun` to run pre-flight only, or `-KeepTempFiles` to preserve the
+throwaway vault for debugging.
+
+---
+
 ## Step 1 — Build the plugin
 
 ```powershell
@@ -130,9 +151,13 @@ Expected output (exit code 0):
 [Smoke] All checks PASSED.
 ```
 
-> The smoke test does **not** open a browser. It talks only to the plugin
-> pipe. CDP is connected but not actively exercised unless you run the
-> browser scenario below.
+> The smoke test does not navigate a browser, but the harness **does** require a
+> live CDP target to be reachable at `localhost:9222` — `PasskeeHarness.StartAsync`
+> calls `WebAuthn.addVirtualAuthenticator` via CDP, and `CreatePasskeyAsync`
+> injects the credential into that virtual authenticator via `WebAuthn.addCredential`.
+> If Chrome is not already running with `--remote-debugging-port=9222`, run
+> Step 6's Chrome launch command first, or use the unattended validator (which
+> spins up a headless Chrome automatically).
 
 ---
 
