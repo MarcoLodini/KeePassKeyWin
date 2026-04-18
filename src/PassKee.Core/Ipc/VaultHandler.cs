@@ -315,10 +315,10 @@ namespace PassKee.Core.Ipc
             {
                 ClientDataHash  = clientDataHash,
                 RpId            = rpId!,
-                RpName          = string.IsNullOrEmpty(rpName) ? rpId! : rpName,
+                RpName          = string.IsNullOrEmpty(rpName) ? rpId! : rpName!,
                 UserHandle      = userHandle!,
                 UserName        = userName!,
-                UserDisplayName = string.IsNullOrEmpty(userDisplayName) ? userName! : userDisplayName,
+                UserDisplayName = string.IsNullOrEmpty(userDisplayName) ? userName! : userDisplayName!,
                 ExcludeList     = excludeList,
             };
         }
