@@ -15,18 +15,22 @@ pub(crate) mod imp {
     use std::sync::{Arc, Mutex};
 
     use windows::core::{GUID, HRESULT};
-    use windows::Win32::System::Com::CoTaskMemAlloc;
+    use windows::Win32::System::Com::{CoReleaseServerProcess, CoTaskMemAlloc};
 
+    use crate::com::exe_server::sta_block_on;
     use crate::com::types::{
         PluginLockStatus, WebauthNPluginCancelOperationRequest,
         WebauthNPluginOperationRequest, WebauthNPluginOperationResponse,
     };
     use crate::ipc::{ClientError, PipeClient};
 
-    // IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
-    pub const IID_IPLUGIN_AUTHENTICATOR: GUID = GUID::from_u128(0xd26bcf6f_b54c_43ff_9f06_d5bf148625f7);
     // IID_IUnknown = {00000000-0000-0000-C000-000000000046}
     const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_C000_000000000046);
+
+    // Canonical IID lives in com::types (cross-platform Guid). Convert on the fly.
+    fn iid_iplugin_authenticator() -> GUID {
+        windows::core::GUID::from(crate::com::types::IID_IPLUGIN_AUTHENTICATOR)
+    }
 
     // ── IPluginAuthenticator vtable ───────────────────────────────────────────
 
@@ -62,11 +66,14 @@ pub(crate) mod imp {
 
     // ── COM object state ─────────────────────────────────────────────────────
 
+    /// State shared between authenticator method dispatches. Protected by a
+    /// `Mutex`, which is taken only briefly to acquire / return the pipe —
+    /// never held across `sta_block_on` waits (doing so would deadlock a
+    /// re-entrant COM dispatch on the same STA thread).
     pub struct PasskeeAuthenticatorState {
         #[allow(dead_code)]
         pub session_id: u32,
         pub pipe: Option<PipeClient>,
-        pub runtime: tokio::runtime::Runtime,
     }
 
     #[repr(C)]
@@ -105,7 +112,7 @@ pub(crate) mod imp {
         ppv: *mut *mut std::ffi::c_void,
     ) -> HRESULT {
         let iid = unsafe { &*riid };
-        if *iid == IID_IUNKNOWN || *iid == IID_IPLUGIN_AUTHENTICATOR {
+        if *iid == IID_IUNKNOWN || *iid == iid_iplugin_authenticator() {
             unsafe { add_ref(this) };
             unsafe { *ppv = this as *mut _ };
             HRESULT(0)
@@ -124,6 +131,11 @@ pub(crate) mod imp {
         if prev == 1 {
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let _ = unsafe { Box::from_raw(this) };
+            // Balance CoAddRefServerProcess() from cf_create_instance.
+            // When this brings the server refcount to zero, CoReleaseServerProcess
+            // internally calls CoSuspendClassObjects + PostQuitMessage, which
+            // unblocks run_com_server's GetMessageW loop.
+            unsafe { CoReleaseServerProcess() };
             return 0;
         }
         prev - 1
@@ -162,16 +174,24 @@ pub(crate) mod imp {
             req.transaction_id.data4[6], req.transaction_id.data4[7],
         );
 
-        let mut guard = obj.state.lock().unwrap();
+        // Take pipe out of state, release lock before STA-pumping wait.
+        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
+        let mut pipe = match pipe_opt {
+            Some(p) => p,
+            // Pipe already in use by another dispatch (re-entrant case) or not
+            // connected. Report success — a cancellation that can't reach the
+            // vault is treated as a best-effort signal, not a hard error.
+            None => return HRESULT(0),
+        };
+
         let params = serde_json::json!({ "transactionId": txn });
-        if guard.pipe.is_some() {
-            // Take pipe out temporarily to satisfy borrow checker — runtime + pipe both from guard.
-            let mut pipe = guard.pipe.take().unwrap();
-            let _: std::result::Result<serde_json::Value, _> = guard.runtime.block_on(async {
-                pipe.call("passkee.cancelOperation", params).await
+        let (_result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
+            sta_block_on(async move {
+                let r = pipe.call("passkee.cancelOperation", params).await;
+                (r, pipe)
             });
-            guard.pipe = Some(pipe);
-        }
+
+        obj.state.lock().unwrap().pipe = Some(pipe_back);
         HRESULT(0)
     }
 
@@ -180,19 +200,23 @@ pub(crate) mod imp {
         lock_status: *mut PluginLockStatus,
     ) -> HRESULT {
         let obj = unsafe { &*this };
-        let mut guard = obj.state.lock().unwrap();
 
-        if guard.pipe.is_none() {
-            unsafe { *lock_status = PluginLockStatus::Locked };
-            return HRESULT(0);
-        }
+        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
+        let mut pipe = match pipe_opt {
+            Some(p) => p,
+            None => {
+                unsafe { *lock_status = PluginLockStatus::Locked };
+                return HRESULT(0);
+            }
+        };
 
-        let mut pipe = guard.pipe.take().unwrap();
-        let result: std::result::Result<serde_json::Value, ClientError> =
-            guard.runtime.block_on(async {
-                pipe.call("passkee.getLockStatus", serde_json::json!({})).await
+        let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
+            sta_block_on(async move {
+                let r = pipe.call("passkee.getLockStatus", serde_json::json!({})).await;
+                (r, pipe)
             });
-        guard.pipe = Some(pipe);
+
+        obj.state.lock().unwrap().pipe = Some(pipe_back);
 
         match result {
             Ok(v) => {
@@ -223,17 +247,24 @@ pub(crate) mod imp {
         let cbor_bytes = unsafe { req.encoded_request() };
         let cbor_b64 = base64::engine::general_purpose::STANDARD.encode(cbor_bytes);
 
-        let mut guard = obj.state.lock().unwrap();
-        if guard.pipe.is_none() {
-            return HRESULT(0x8000_4005u32 as i32); // E_FAIL
-        }
+        // Take pipe out of state, release lock before STA-pumping wait. Never
+        // hold the state mutex across sta_block_on — doing so would deadlock
+        // any re-entrant COM dispatch on the same STA thread.
+        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
+        let mut pipe = match pipe_opt {
+            Some(p) => p,
+            None => return HRESULT(0x8000_4005u32 as i32), // E_FAIL
+        };
 
-        // Take pipe to avoid simultaneous mut+immut borrow of guard.
-        let mut pipe = guard.pipe.take().unwrap();
         let params = serde_json::json!({ "cbor": cbor_b64 });
-        let result: std::result::Result<serde_json::Value, ClientError> =
-            guard.runtime.block_on(async { pipe.call(method, params).await });
-        guard.pipe = Some(pipe);
+        let method_owned = method.to_string();
+        let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
+            sta_block_on(async move {
+                let r = pipe.call(&method_owned, params).await;
+                (r, pipe)
+            });
+
+        obj.state.lock().unwrap().pipe = Some(pipe_back);
 
         match result {
             Ok(v) => {
@@ -259,6 +290,28 @@ pub(crate) mod imp {
             Err(ClientError::VaultLocked) => HRESULT(0x8007_0005u32 as i32), // E_ACCESSDENIED
             Err(_) => HRESULT(0x8000_4005u32 as i32),
         }
+    }
+}
+
+// ── From impl: cross-platform Guid → windows::core::GUID ────────────────────
+
+#[cfg(windows)]
+impl From<crate::com::types::Guid> for windows::core::GUID {
+    fn from(g: crate::com::types::Guid) -> Self {
+        // Reconstruct the u128 from the GUID fields (big-endian field assembly
+        // matching the GUID layout: data1(32) + data2(16) + data3(16) + data4[8]).
+        let hi = ((g.data1 as u128) << 96)
+            | ((g.data2 as u128) << 80)
+            | ((g.data3 as u128) << 64)
+            | ((g.data4[0] as u128) << 56)
+            | ((g.data4[1] as u128) << 48)
+            | ((g.data4[2] as u128) << 40)
+            | ((g.data4[3] as u128) << 32)
+            | ((g.data4[4] as u128) << 24)
+            | ((g.data4[5] as u128) << 16)
+            | ((g.data4[6] as u128) << 8)
+            |  (g.data4[7] as u128);
+        windows::core::GUID::from_u128(hi)
     }
 }
 

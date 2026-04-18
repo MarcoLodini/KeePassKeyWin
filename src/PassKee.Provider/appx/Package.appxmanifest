@@ -62,9 +62,10 @@
   <!-- ── Applications ──────────────────────────────────────────────────────── -->
   <Applications>
     <!--
-      The provider has no visible UI — it runs purely as a COM in-proc server.
-      We still need an <Application> entry so the manifest is valid.
-      The Executable here is the CLI helper; the actual loaded DLL is the cdylib.
+      passkee-provider.exe hosts an out-of-process COM class factory (STA).
+      The Windows WebAuthn host activates it via CoCreateInstance(CLSID_PassKee,
+      CLSCTX_LOCAL_SERVER), passing -PluginActivated. Register PassKee as a
+      passkey provider by running 'passkee-provider.exe register' post-install.
     -->
     <Application Id="PassKeeProvider" Executable="passkee-provider.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
@@ -112,7 +113,8 @@
                 DisplayName="PassKee Passkey Provider">
               <com:Class
                 Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
-                DisplayName="PassKee Passkey Provider" />
+                DisplayName="PassKee Passkey Provider"
+                ThreadingModel="Apartment" />
             </com:ExeServer>
           </com:ComServer>
         </com:Extension>

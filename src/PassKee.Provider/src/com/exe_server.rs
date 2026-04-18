@@ -1,0 +1,378 @@
+//! EXE-server entry points and ClassFactory for IPluginAuthenticator.
+//!
+//! The Windows WebAuthn host activates PassKee via
+//!   CoCreateInstance(CLSID_PassKee, CLSCTX_LOCAL_SERVER, ...)
+//! which causes the OS to launch `passkee-provider.exe -PluginActivated`.
+//! The EXE then calls `run_com_server()` which registers the ClassFactory on
+//! an STA and pumps messages until the last object is released.
+//!
+//! CLSID_PassKee = IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+//!
+//! Lifecycle integration:
+//!   - `cf_create_instance` calls `CoAddRefServerProcess()` when handing out an
+//!     authenticator object (paired with `CoReleaseServerProcess()` in that
+//!     object's final Release — see `com::server`).
+//!   - `cf_lock_server(TRUE/FALSE)` wraps `CoAddRefServerProcess` /
+//!     `CoReleaseServerProcess` per the standard IClassFactory::LockServer
+//!     pattern.
+//!   - When the server reference count reaches zero, `CoReleaseServerProcess`
+//!     internally posts `WM_QUIT` to the calling thread, which (under STA)
+//!     is the same thread running `run_com_server`'s message pump. The pump
+//!     then exits cleanly.
+//!
+//! STA re-entrancy: `sta_block_on()` replaces raw `runtime.block_on(...)` so
+//! pipe I/O does not starve the message pump. Any re-entrant COM calls that
+//! arrive during the wait (for example a `CancelOperation` from the host) are
+//! dispatched via the hidden window messages queued by the COM marshaling
+//! layer.
+
+#[cfg(windows)]
+pub(crate) mod imp {
+    use std::ffi::c_void;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex, OnceLock,
+    };
+
+    use windows::core::{GUID, HRESULT};
+    use windows::Win32::System::Com::{
+        CoAddRefServerProcess, CoReleaseServerProcess,
+    };
+
+    use crate::com::server::imp::{
+        IPluginAuthenticatorImpl,
+        PasskeeAuthenticatorState,
+    };
+
+    // IID_IClassFactory = {00000001-0000-0000-C000-000000000046}
+    const IID_ICLASS_FACTORY: GUID = GUID::from_u128(0x00000001_0000_0000_C000_000000000046);
+    // IID_IUnknown = {00000000-0000-0000-C000-000000000046}
+    const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_C000_000000000046);
+    // CLSID_PassKee = IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+    pub(crate) const CLSID_PASSKEE: GUID = GUID::from_u128(0xd26bcf6f_b54c_43ff_9f06_d5bf148625f7);
+
+    /// Shared Tokio runtime. Populated by `run_com_server` before the class
+    /// factory is registered; consumed by `cf_create_instance` and
+    /// `sta_block_on`.
+    pub static RT: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
+
+    /// Thread ID of the STA running the message pump. Zero until
+    /// `run_com_server` captures it.
+    pub static STA_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+    // ── IClassFactory vtable ──────────────────────────────────────────────────
+
+    #[repr(C)]
+    pub(crate) struct ClassFactoryVtbl {
+        query_interface: unsafe extern "system" fn(*mut ClassFactory, *const GUID, *mut *mut c_void) -> HRESULT,
+        add_ref:         unsafe extern "system" fn(*mut ClassFactory) -> u32,
+        release:         unsafe extern "system" fn(*mut ClassFactory) -> u32,
+        create_instance: unsafe extern "system" fn(*mut ClassFactory, *mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
+        lock_server:     unsafe extern "system" fn(*mut ClassFactory, i32) -> HRESULT,
+    }
+
+    #[repr(C)]
+    pub(crate) struct ClassFactory {
+        vtbl:      *const ClassFactoryVtbl,
+        ref_count: AtomicU32,
+        session_id: u32,
+    }
+
+    impl ClassFactory {
+        fn new(session_id: u32) -> Box<Self> {
+            static VTBL: ClassFactoryVtbl = ClassFactoryVtbl {
+                query_interface: cf_query_interface,
+                add_ref:         cf_add_ref,
+                release:         cf_release,
+                create_instance: cf_create_instance,
+                lock_server:     cf_lock_server,
+            };
+            Box::new(Self { vtbl: &VTBL, ref_count: AtomicU32::new(1), session_id })
+        }
+    }
+
+    unsafe extern "system" fn cf_query_interface(
+        this: *mut ClassFactory, riid: *const GUID, ppv: *mut *mut c_void,
+    ) -> HRESULT {
+        let iid = unsafe { &*riid };
+        if *iid == IID_IUNKNOWN || *iid == IID_ICLASS_FACTORY {
+            unsafe { cf_add_ref(this) };
+            unsafe { *ppv = this as *mut _ };
+            HRESULT(0)
+        } else {
+            unsafe { *ppv = std::ptr::null_mut() };
+            HRESULT(0x8000_4002u32 as i32) // E_NOINTERFACE
+        }
+    }
+
+    unsafe extern "system" fn cf_add_ref(this: *mut ClassFactory) -> u32 {
+        unsafe { (*this).ref_count.fetch_add(1, Ordering::Relaxed) + 1 }
+    }
+
+    unsafe extern "system" fn cf_release(this: *mut ClassFactory) -> u32 {
+        let prev = unsafe { (*this).ref_count.fetch_sub(1, Ordering::Release) };
+        if prev == 1 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            let _ = unsafe { Box::from_raw(this) };
+            // NOTE: no CoReleaseServerProcess here — the class-factory lifetime
+            // is independent of the server-object refcount. Server-process
+            // lifetime is accounted for by cf_create_instance/authenticator
+            // release and cf_lock_server.
+            return 0;
+        }
+        prev - 1
+    }
+
+    unsafe extern "system" fn cf_create_instance(
+        this: *mut ClassFactory, _outer: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void,
+    ) -> HRESULT {
+        let session_id = unsafe { (*this).session_id };
+
+        // Pull the shared runtime. Panic is intentional — only reachable after
+        // run_com_server has populated RT.
+        let runtime = RT.get().expect("runtime uninitialised").clone();
+
+        // Connect the pipe once per authenticator activation.
+        let pipe = runtime.block_on(crate::ipc::PipeClient::connect(session_id)).ok();
+
+        let state = Arc::new(Mutex::new(PasskeeAuthenticatorState { session_id, pipe }));
+        let obj = IPluginAuthenticatorImpl::new(state);
+        let raw = Box::into_raw(obj);
+
+        // Increment the process ref count BEFORE the caller gets the object.
+        // Balanced by the authenticator's Release in com::server.
+        unsafe { CoAddRefServerProcess() };
+
+        // Route through QueryInterface.
+        let vtbl = unsafe { &*(*raw).vtbl };
+        let hr = unsafe { (vtbl.iunknown.query_interface)(raw, riid, ppv) };
+        if hr.is_err() {
+            let _ = unsafe { Box::from_raw(raw) };
+            unsafe { CoReleaseServerProcess() };
+        }
+        hr
+    }
+
+    unsafe extern "system" fn cf_lock_server(_this: *mut ClassFactory, lock: i32) -> HRESULT {
+        // Standard LockServer implementation per MS guidance.
+        if lock != 0 {
+            unsafe { CoAddRefServerProcess() };
+        } else {
+            unsafe { CoReleaseServerProcess() };
+        }
+        HRESULT(0)
+    }
+
+    // ── Public factory helper ─────────────────────────────────────────────────
+
+    pub(super) fn new_class_factory(session_id: u32) -> Box<ClassFactory> {
+        ClassFactory::new(session_id)
+    }
+
+    // ── Session ID helper ─────────────────────────────────────────────────────
+
+    pub(crate) fn get_session_id() -> u32 {
+        use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+        use windows::Win32::System::Threading::GetCurrentProcessId;
+        let pid = unsafe { GetCurrentProcessId() };
+        let mut sid = 0u32;
+        let _ = unsafe { ProcessIdToSessionId(pid, &mut sid) };
+        sid
+    }
+}
+
+// ── Public entry points ───────────────────────────────────────────────────────
+
+/// Run the EXE as an out-of-process COM class factory (STA).
+///
+/// Sequence (MS-documented out-of-proc server pattern):
+///   1. Build the shared Tokio runtime (so SCM never waits on tokio init).
+///   2. `CoInitializeEx(STA)`.
+///   3. Capture the STA thread ID for diagnostics.
+///   4. Build ClassFactory.
+///   5. `CoRegisterClassObject(CLSID, IUnknown, CLSCTX_LOCAL_SERVER,
+///       REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`.
+///   6. `CoResumeClassObjects()` — allow activations.
+///   7. `GetMessageW` / `TranslateMessage` / `DispatchMessageW` pump until
+///      `WM_QUIT` arrives (posted by `CoReleaseServerProcess` when the last
+///      authenticator is released).
+///   8. `CoRevokeClassObject(cookie)` → Release our factory ref →
+///      `CoUninitialize` → `process::exit(0)`.
+#[cfg(windows)]
+pub fn run_com_server() -> ! {
+    use std::sync::atomic::Ordering;
+    use windows::core::{IUnknown, Interface};
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoRegisterClassObject, CoResumeClassObjects, CoRevokeClassObject,
+        CoUninitialize, CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED,
+        REGCLS_MULTIPLEUSE, REGCLS_SUSPENDED,
+    };
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    };
+
+    // 1. Build shared tokio runtime BEFORE any COM call — SCM is watching.
+    let rt = std::sync::Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime"),
+    );
+    // OK to ignore — we're the only caller.
+    let _ = imp::RT.set(rt);
+
+    // 2. STA init.
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .expect("CoInitializeEx(STA) failed");
+    }
+
+    // 3. Capture STA thread ID (diagnostic; not functionally required because
+    // CoReleaseServerProcess posts WM_QUIT to the calling thread on zero-ref).
+    imp::STA_THREAD_ID.store(unsafe { GetCurrentThreadId() }, Ordering::SeqCst);
+
+    // 4. Build ClassFactory. ref_count starts at 1 per ClassFactory::new.
+    let session_id = imp::get_session_id();
+    let factory_box = imp::new_class_factory(session_id);
+    let factory_raw = Box::into_raw(factory_box) as *mut std::ffi::c_void;
+
+    // 5. Wrap as IUnknown. from_raw takes ownership of the ref — it does NOT
+    // AddRef. When iunk drops, its vtable Release is called, decrementing
+    // our ref count. First three vtable slots of ClassFactoryVtbl match
+    // IUnknownVtbl, so dispatch is ABI-compatible.
+    let iunk = unsafe { IUnknown::from_raw(factory_raw) };
+
+    // 6. Register class object + resume. In windows-rs 0.61 this returns the
+    // cookie as Result<u32> rather than taking it as an out-param.
+    let cookie: u32 = unsafe {
+        CoRegisterClassObject(
+            &imp::CLSID_PASSKEE,
+            &iunk,
+            CLSCTX_LOCAL_SERVER,
+            REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED,
+        )
+        .expect("CoRegisterClassObject failed")
+    };
+    unsafe { CoResumeClassObjects().expect("CoResumeClassObjects failed") };
+
+    // 7. STA message pump.
+    let mut msg = MSG::default();
+    loop {
+        let r = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        // 0 = WM_QUIT, -1 = error. Either way, exit.
+        if r.0 == 0 || r.0 == -1 {
+            break;
+        }
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    // 8. Shutdown. CoRevokeClassObject releases COM's factory ref; drop(iunk)
+    // releases ours (ref → 0 → ClassFactory freed via Box::from_raw in cf_release).
+    unsafe {
+        let _ = CoRevokeClassObject(cookie);
+    }
+    drop(iunk);
+
+    unsafe { CoUninitialize() };
+    std::process::exit(0);
+}
+
+/// STA-safe `block_on`: spawn `fut` onto the shared Tokio runtime, then wait
+/// on an event via `CoWaitForMultipleHandles` so the STA message pump keeps
+/// running. Returns `fut`'s output when it completes.
+///
+/// Why not `runtime.block_on`: on an STA thread, `block_on` parks the thread
+/// entirely — any re-entrant COM call (for example a `CancelOperation`
+/// dispatched by the WebAuthn host while `MakeCredential` is still in flight)
+/// arrives as a window message and cannot be delivered. `CoWaitForMultipleHandles`
+/// pumps those messages while waiting on our completion event.
+#[cfg(windows)]
+pub fn sta_block_on<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    use std::sync::mpsc::sync_channel;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Com::CoWaitForMultipleHandles;
+    use windows::Win32::System::Threading::{CreateEventW, SetEvent, INFINITE};
+
+    // Auto-reset (manual_reset = false), initially non-signaled, unnamed.
+    // In windows-rs 0.61, CreateEventW takes Rust bool (gated behind Win32_Security).
+    let event: HANDLE = unsafe {
+        CreateEventW(None, false, false, None).expect("CreateEventW failed")
+    };
+
+    // HANDLE's inner ptr isn't Send; pass the raw integer across threads.
+    let event_raw = event.0 as isize;
+    let (tx, rx) = sync_channel::<T>(1);
+
+    imp::RT
+        .get()
+        .expect("tokio runtime not initialised")
+        .spawn(async move {
+            // Catch panics from `fut` so SetEvent still fires. Without this,
+            // a panic would drop `tx` (no send) AND skip SetEvent → the STA
+            // thread's CoWaitForMultipleHandles(INFINITE) would hang forever.
+            let result = std::panic::AssertUnwindSafe(fut);
+            let outcome = futures::FutureExt::catch_unwind(result).await;
+            if let Ok(v) = outcome {
+                let _ = tx.send(v);
+            }
+            // Always signal — even on panic or channel-send failure — so the
+            // STA thread unblocks. It will observe `rx.recv() == Err(...)`
+            // and map that to an HRESULT.
+            let h = HANDLE(event_raw as *mut _);
+            unsafe {
+                let _ = SetEvent(h);
+            }
+        });
+
+    // dwFlags = 0 (COWAIT_DEFAULT) — on an STA thread this pumps COM RPC
+    // messages (delivered via the hidden COM window) while waiting on our
+    // event, so re-entrant dispatch (e.g. a CancelOperation during a
+    // MakeCredential) is not starved. In windows-rs 0.61 this returns the
+    // signaled index as Result<u32>.
+    let _idx = unsafe {
+        CoWaitForMultipleHandles(0, INFINITE, &[event])
+            .expect("CoWaitForMultipleHandles failed")
+    };
+
+    // Ordering invariant: the spawned task performs tx.send → SetEvent → task
+    // returns. The STA wakes on SetEvent, then recv sees the already-sent
+    // value. SetEvent is the last kernel-handle touch the worker makes, so
+    // CloseHandle here is race-free with respect to the worker.
+    let recv_result = rx.recv();
+    unsafe {
+        let _ = CloseHandle(event);
+    }
+    // Err here means the spawned task panicked. Propagate via panic on the
+    // STA thread — the COM dispatch function's `catch_unwind` (if we ever add
+    // one) would turn this into an HRESULT; for now, a panic is strictly
+    // better than a silent hang.
+    recv_result.expect("tokio task panicked — see logs")
+}
+
+/// Register PassKee as a passkey provider with Windows WebAuthn.
+///
+/// Track C will replace this stub with a real call to
+/// `WebAuthNPluginAddAuthenticator`.
+#[cfg(windows)]
+pub fn cmd_register() -> Result<(), String> {
+    unimplemented!("Track C — WebAuthNPluginAddAuthenticator comes next");
+}
+
+/// Unregister PassKee from Windows WebAuthn.
+///
+/// Track C will replace this stub with a real call to
+/// `WebAuthNPluginRemoveAuthenticator`.
+#[cfg(windows)]
+pub fn cmd_unregister() -> Result<(), String> {
+    unimplemented!("Track C — WebAuthNPluginRemoveAuthenticator comes next");
+}

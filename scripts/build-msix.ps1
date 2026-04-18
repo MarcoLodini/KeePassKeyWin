@@ -11,9 +11,9 @@
                   have been run beforehand (WSL2 or native-Windows).
                   Windows SDK makeappx.exe must be reachable (via PATH or the
                   standard Windows Kits installation).
-    Inputs      : -RustArtifactDir (optional) — source directory for passkee_provider.dll +
-                   passkee-provider.exe. Defaults to the repo-local release path. If you
-                   build on WSL and validate on Windows, pass the UNC path, e.g.:
+    Inputs      : -RustArtifactDir (optional) — source directory for passkee-provider.exe.
+                   Defaults to the repo-local release path. If you build on WSL and
+                   validate on Windows, pass the UNC path, e.g.:
                      -RustArtifactDir '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
     Outputs     : out\PassKee.Provider.msix
     Exit codes  : 0 = PASS, 1 = FAIL
@@ -44,12 +44,11 @@ if ([string]::IsNullOrEmpty($RustArtifactDir)) {
 } else {
     $releaseDir = $RustArtifactDir
 }
-$providerDll = Join-Path $releaseDir 'passkee_provider.dll'
 $providerExe = Join-Path $releaseDir 'passkee-provider.exe'
 
 Write-Host "[build-msix] Rust artifact dir: $releaseDir"
 
-foreach ($required in @($providerDll, $providerExe)) {
+foreach ($required in @($providerExe)) {
     if (-not (Test-Path $required)) {
         Write-Host "[build-msix] FAIL: Required build output not found: $required" -ForegroundColor Red
         Write-Host "[build-msix]   On Windows with Rust installed: cargo build --target x86_64-pc-windows-msvc --release" -ForegroundColor Yellow
@@ -124,9 +123,6 @@ Write-Host "[build-msix] Staging directory: $stagingDir"
 # we rename here. See https://learn.microsoft.com/windows/msix/package/manual-packaging-root
 Copy-Item $manifestSrc (Join-Path $stagingDir 'AppxManifest.xml') -Force
 Write-Host "[build-msix] Staged: AppxManifest.xml (renamed from Package.appxmanifest)"
-
-Copy-Item $providerDll (Join-Path $stagingDir 'passkee_provider.dll') -Force
-Write-Host "[build-msix] Staged: passkee_provider.dll"
 
 Copy-Item $providerExe (Join-Path $stagingDir 'passkee-provider.exe') -Force
 Write-Host "[build-msix] Staged: passkee-provider.exe"

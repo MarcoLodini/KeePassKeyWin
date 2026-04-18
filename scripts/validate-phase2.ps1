@@ -12,7 +12,7 @@
                     5. Install and verify the MSIX package.
     Prerequisites:
                   - cargo xwin build --target x86_64-pc-windows-msvc --release must
-                    already have been run (produces passkee_provider.dll + passkee-provider.exe).
+                    already have been run (produces passkee-provider.exe).
                   - Must be run from an elevated (administrator) PowerShell session so
                     ensure-dev-cert.ps1 can install the cert into LocalMachine\TrustedPeople.
                   - Windows SDK (makeappx.exe + signtool.exe) installed.
@@ -20,7 +20,7 @@
                    reused for Steps 3 and 4 automatically — no repeated prompts).
                   -PfxPath (default: out\PassKee.Dev.pfx)
                   -MsixPath (default: out\PassKee.Provider.msix)
-                  -RustArtifactDir — override location of passkee_provider.dll / .exe. Use the
+                  -RustArtifactDir — override location of passkee-provider.exe. Use the
                    WSL UNC path if cross-compiling from WSL2:
                      '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
                   -DryRun — pre-flight only; skips all build/sign/install steps.
@@ -123,7 +123,6 @@ if ([string]::IsNullOrEmpty($RustArtifactDir)) {
 } else {
     $releaseDir = $RustArtifactDir
 }
-$providerDll = Join-Path $releaseDir 'passkee_provider.dll'
 $providerExe = Join-Path $releaseDir 'passkee-provider.exe'
 $manifestFile = Join-Path $repoRoot 'src\PassKee.Provider\appx\Package.appxmanifest'
 
@@ -131,7 +130,7 @@ Write-Host "[validate-phase2] Rust artifact dir: $releaseDir"
 
 $allOk = $true
 
-foreach ($f in @($providerDll, $providerExe, $manifestFile)) {
+foreach ($f in @($providerExe, $manifestFile)) {
     $ok = Test-Path $f
     $status = if ($ok) { 'PASS' } else { 'FAIL' }
     $color  = if ($ok) { 'Green' } else { 'Red' }

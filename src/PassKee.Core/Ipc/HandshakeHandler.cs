@@ -18,7 +18,7 @@ namespace PassKee.Core.Ipc
     {
         // Expected package family name for the PassKee.Provider MSIX.
         // Verified at runtime; hardcoded here because v1 only ships one provider package.
-        public const string ExpectedPkgFamily = "PassKee.Provider_8wekyb3d8bbwe";
+        public const string ExpectedPkgFamily = "PassKee.Provider_rh4edrm0by30m";
 
         public static JToken Handle(JToken? @params, ConnectionContext context, INonceStore nonceStore)
         {

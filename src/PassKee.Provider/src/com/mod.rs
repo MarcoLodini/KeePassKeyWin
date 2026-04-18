@@ -15,5 +15,6 @@
 //!   3  GetLockStatus(lock_status: *mut PluginLockStatus) -> HRESULT
 
 pub mod server;
-pub mod dll;
+#[cfg(windows)]
+pub mod exe_server;
 pub mod types;

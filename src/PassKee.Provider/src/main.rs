@@ -1,8 +1,11 @@
-//! PassKee Windows Passkey Provider — Phase 2 prep CLI.
+//! PassKee Windows Passkey Provider — Phase 2 CLI.
 //!
 //! Subcommands:
-//!   smoke            -- connect, handshake, print hello response.
-//!   make-credential  -- full makeCredential flow via the plugin pipe.
+//!   -PluginActivated  -- COM ExeServer activation path (Windows-only, never returns).
+//!   register          -- Register PassKee with Windows WebAuthn (Windows-only stub).
+//!   unregister        -- Unregister PassKee from Windows WebAuthn (Windows-only stub).
+//!   smoke             -- Connect, handshake, print hello response.
+//!   make-credential   -- Full makeCredential flow via the plugin pipe.
 
 use passkee_provider::ipc::{self, PipeClient};
 use passkee_provider::ctap::{
@@ -15,54 +18,146 @@ use std::process;
 use tracing_subscriber::fmt;
 
 /// Expected package family name for the sidecar — must match the C# constant.
-const PKG_FAMILY: &str = "PassKee.Provider_8wekyb3d8bbwe";
+const PKG_FAMILY: &str = "PassKee.Provider_rh4edrm0by30m";
 
-#[tokio::main]
-async fn main() {
-    fmt::init();
+// ── Subcommand enum (factored out for unit-testability) ───────────────────────
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: passkee-provider <smoke|make-credential> [options]");
-        eprintln!("  smoke --session <id> --nonce <nonce>");
-        eprintln!("  make-credential --session <id> --nonce <nonce> --rp-id <x> --user <y>");
-        process::exit(1);
-    }
+#[derive(Debug, PartialEq)]
+enum Subcommand {
+    PluginActivated,
+    Register,
+    Unregister,
+    Smoke,
+    MakeCredential,
+    Unknown,
+}
 
-    let result = match args[1].as_str() {
-        "smoke" => cmd_smoke(&args[2..]).await,
-        "make-credential" => cmd_make_credential(&args[2..]).await,
-        other => {
-            eprintln!("Unknown subcommand: {other}");
-            process::exit(1);
-        }
-    };
-
-    if let Err(e) = result {
-        eprintln!("Error: {e}");
-        process::exit(1);
+fn parse_subcommand(s: &str) -> Subcommand {
+    match s {
+        "-PluginActivated" => Subcommand::PluginActivated,
+        "register"         => Subcommand::Register,
+        "unregister"       => Subcommand::Unregister,
+        "smoke"            => Subcommand::Smoke,
+        "make-credential"  => Subcommand::MakeCredential,
+        _                  => Subcommand::Unknown,
     }
 }
 
-async fn cmd_smoke(args: &[String]) -> Result<(), ipc::ClientError> {
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+fn main() {
+    fmt::init();
+
+    let args: Vec<String> = std::env::args().collect();
+    let sub_str = args.get(1).map(String::as_str).unwrap_or("");
+    let sub = parse_subcommand(sub_str);
+
+    let exit_code = match sub {
+        Subcommand::PluginActivated => run_plugin_activated(),
+        Subcommand::Register        => run_register(),
+        Subcommand::Unregister      => run_unregister(),
+        Subcommand::Smoke           => run_blocking_async(|| cmd_smoke(&args)),
+        Subcommand::MakeCredential  => run_blocking_async(|| cmd_make_credential(&args)),
+        Subcommand::Unknown         => { print_usage(); 1 }
+    };
+
+    process::exit(exit_code);
+}
+
+// ── Platform dispatch: -PluginActivated ──────────────────────────────────────
+
+#[cfg(windows)]
+fn run_plugin_activated() -> i32 {
+    // run_com_server() has return type `!` — it never returns.
+    passkee_provider::com::exe_server::run_com_server()
+}
+
+#[cfg(not(windows))]
+fn run_plugin_activated() -> i32 {
+    eprintln!("-PluginActivated is Windows-only");
+    1
+}
+
+// ── Platform dispatch: register ──────────────────────────────────────────────
+
+#[cfg(windows)]
+fn run_register() -> i32 {
+    match passkee_provider::com::exe_server::cmd_register() {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("register failed: {e}"); 1 }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_register() -> i32 {
+    eprintln!("register is Windows-only");
+    1
+}
+
+// ── Platform dispatch: unregister ────────────────────────────────────────────
+
+#[cfg(windows)]
+fn run_unregister() -> i32 {
+    match passkee_provider::com::exe_server::cmd_unregister() {
+        Ok(()) => 0,
+        Err(e) => { eprintln!("unregister failed: {e}"); 1 }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_unregister() -> i32 {
+    eprintln!("unregister is Windows-only");
+    1
+}
+
+// ── Async runner (smoke / make-credential) ───────────────────────────────────
+
+fn run_blocking_async<F, Fut>(f: F) -> i32
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("tokio runtime init failed: {e}");
+            return 1;
+        }
+    };
+    match rt.block_on(f()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
+// ── Subcommand implementations ────────────────────────────────────────────────
+
+async fn cmd_smoke(args: &[String]) -> Result<(), String> {
     let (session_id, nonce) = parse_session_nonce(args);
 
     eprintln!("[smoke] Connecting to pipe PassKee.{session_id}...");
-    let mut client = PipeClient::connect(session_id).await?;
+    let mut client = PipeClient::connect(session_id).await
+        .map_err(|e| format!("connect failed: {e}"))?;
     eprintln!("[smoke] Connected. Performing handshake...");
-    client.handshake(PKG_FAMILY, &nonce).await?;
+    client.handshake(PKG_FAMILY, &nonce).await
+        .map_err(|e| format!("handshake failed: {e}"))?;
     eprintln!("[smoke] Handshake OK. Plugin is live.");
     Ok(())
 }
 
-async fn cmd_make_credential(args: &[String]) -> Result<(), ipc::ClientError> {
+async fn cmd_make_credential(args: &[String]) -> Result<(), String> {
     let (session_id, nonce) = parse_session_nonce(args);
     let rp_id = flag(args, "--rp-id").unwrap_or_else(|| "example.com".into());
     let user = flag(args, "--user").unwrap_or_else(|| "user@example.com".into());
 
     eprintln!("[make-credential] Connecting to pipe PassKee.{session_id}...");
-    let mut client = PipeClient::connect(session_id).await?;
-    client.handshake(PKG_FAMILY, &nonce).await?;
+    let mut client = PipeClient::connect(session_id).await
+        .map_err(|e| format!("connect failed: {e}"))?;
+    client.handshake(PKG_FAMILY, &nonce).await
+        .map_err(|e| format!("handshake failed: {e}"))?;
     eprintln!("[make-credential] Handshake OK.");
 
     let params = CreatePasskeyParams {
@@ -73,7 +168,8 @@ async fn cmd_make_credential(args: &[String]) -> Result<(), ipc::ClientError> {
         user_display_name: user.clone(),
     };
 
-    let result: ctap::CreatePasskeyResult = client.call("passkee.createPasskey", &params).await?;
+    let result: ctap::CreatePasskeyResult = client.call("passkee.createPasskey", &params).await
+        .map_err(|e| format!("createPasskey failed: {e}"))?;
     eprintln!("[make-credential] Created credential: {}", result.credential_id);
 
     // Verify the rpIdHash in authData.
@@ -93,7 +189,8 @@ async fn cmd_make_credential(args: &[String]) -> Result<(), ipc::ClientError> {
             "passkee.listCredentials",
             ListCredentialsParams { rp_id: rp_id.clone() },
         )
-        .await?;
+        .await
+        .map_err(|e| format!("listCredentials failed: {e}"))?;
     eprintln!("[make-credential] listCredentials returned {} entry/entries", creds.len());
 
     // Sign an assertion.
@@ -104,7 +201,8 @@ async fn cmd_make_credential(args: &[String]) -> Result<(), ipc::ClientError> {
         auth_data: base64_encode(&auth_data_bytes),
         client_data_hash: base64_encode(&client_data_hash),
     };
-    let sig: ctap::SignAssertionResult = client.call("passkee.signAssertion", &sign_params).await?;
+    let sig: ctap::SignAssertionResult = client.call("passkee.signAssertion", &sign_params).await
+        .map_err(|e| format!("signAssertion failed: {e}"))?;
     eprintln!(
         "[make-credential] Signature ({} bytes): OK",
         base64_decode(&sig.signature).len()
@@ -116,11 +214,26 @@ async fn cmd_make_credential(args: &[String]) -> Result<(), ipc::ClientError> {
             "passkee.deleteCredential",
             DeleteCredentialParams { credential_id: result.credential_id },
         )
-        .await?;
+        .await
+        .map_err(|e| format!("deleteCredential failed: {e}"))?;
     eprintln!("[make-credential] deleteCredential: deleted={}", del.deleted);
 
     eprintln!("[make-credential] All steps PASSED.");
     Ok(())
+}
+
+// ── Usage banner ──────────────────────────────────────────────────────────────
+
+fn print_usage() {
+    eprintln!("Usage: passkee-provider <subcommand> [options]");
+    eprintln!();
+    eprintln!("Subcommands:");
+    eprintln!("  -PluginActivated              Run as COM ExeServer (Windows-only; launched by the OS)");
+    eprintln!("  register                      Register PassKee with Windows WebAuthn (Windows-only)");
+    eprintln!("  unregister                    Unregister PassKee from Windows WebAuthn (Windows-only)");
+    eprintln!("  smoke     --session <id> --nonce <nonce>                  Handshake smoke test");
+    eprintln!("  make-credential --session <id> --nonce <nonce> --rp-id <x> --user <y>");
+    eprintln!("                                Full makeCredential IPC flow");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -213,4 +326,53 @@ fn read_nonce_from_registry() -> Option<String> {
     // buf_bytes includes the null terminator; convert to String.
     let len = (buf_bytes / 2).saturating_sub(1) as usize;
     Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_plugin_activated() {
+        assert_eq!(parse_subcommand("-PluginActivated"), Subcommand::PluginActivated);
+    }
+
+    #[test]
+    fn parse_register() {
+        assert_eq!(parse_subcommand("register"), Subcommand::Register);
+    }
+
+    #[test]
+    fn parse_unregister() {
+        assert_eq!(parse_subcommand("unregister"), Subcommand::Unregister);
+    }
+
+    #[test]
+    fn parse_smoke() {
+        assert_eq!(parse_subcommand("smoke"), Subcommand::Smoke);
+    }
+
+    #[test]
+    fn parse_make_credential() {
+        assert_eq!(parse_subcommand("make-credential"), Subcommand::MakeCredential);
+    }
+
+    #[test]
+    fn parse_empty_is_unknown() {
+        assert_eq!(parse_subcommand(""), Subcommand::Unknown);
+    }
+
+    #[test]
+    fn parse_garbage_is_unknown() {
+        assert_eq!(parse_subcommand("garbage"), Subcommand::Unknown);
+    }
+
+    #[test]
+    fn parse_case_sensitive() {
+        // Must not match with different casing.
+        assert_eq!(parse_subcommand("Smoke"), Subcommand::Unknown);
+        assert_eq!(parse_subcommand("REGISTER"), Subcommand::Unknown);
+    }
 }

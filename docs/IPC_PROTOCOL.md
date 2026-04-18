@@ -59,14 +59,14 @@ The **first** request on every connection must be `passkee.hello`. All other met
   "id": 1,
   "method": "passkee.hello",
   "params": {
-    "clientPkgFamilyName": "PassKee.Provider_8wekyb3d8bbwe",
+    "clientPkgFamilyName": "PassKee.Provider_rh4edrm0by30m",
     "handshakeNonce": "<64-char hex nonce>"
   }
 }
 ```
 
 **Validation**:
-1. `clientPkgFamilyName` must equal `PassKee.Provider_8wekyb3d8bbwe` exactly.
+1. `clientPkgFamilyName` must equal `PassKee.Provider_rh4edrm0by30m` exactly.
 2. `handshakeNonce` must match the value stored at `HKEY_CURRENT_USER\Software\PassKee\HandshakeNonce` (REG_SZ).
 3. The nonce is deleted from the registry on first successful use (single-use).
 

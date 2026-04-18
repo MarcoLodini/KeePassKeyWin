@@ -335,7 +335,7 @@ mod tests {
 
         let mut client = PipeClient::connect(session_id).await.unwrap();
         client
-            .handshake("PassKee.Provider_8wekyb3d8bbwe", "deadbeef")
+            .handshake("PassKee.Provider_rh4edrm0by30m", "deadbeef")
             .await
             .unwrap();
 

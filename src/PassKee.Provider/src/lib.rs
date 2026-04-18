@@ -1,6 +1,7 @@
 //! PassKee Provider — library root.
 //!
-//! On Windows: exports COM DLL entry points and the full COM server.
+//! On Windows: exposes the COM EXE-server (ClassFactory, run_com_server,
+//! cmd_register, cmd_unregister) and the full IPluginAuthenticator COM server.
 //! On Linux: compiles the shared IPC/CTAP modules + pure-Rust COM type stubs
 //! so that non-runtime tests (ABI assertions, serde round-trips) run on CI.
 
@@ -14,13 +15,10 @@ pub mod com {
     // Server implementation — imports windows-rs, Windows only.
     #[cfg(windows)]
     pub mod server;
-    // DLL exports — Windows only.
+    // EXE-server entry points (ClassFactory, run_com_server, cmd_register, cmd_unregister).
     #[cfg(windows)]
-    pub mod dll;
+    pub mod exe_server;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;
 }
-
-#[cfg(windows)]
-pub use com::dll::*;
