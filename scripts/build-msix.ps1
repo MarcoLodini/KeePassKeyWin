@@ -11,14 +11,19 @@
                   have been run beforehand (WSL2 or native-Windows).
                   Windows SDK makeappx.exe must be reachable (via PATH or the
                   standard Windows Kits installation).
-    Inputs      : (none — all paths are relative to repo root)
+    Inputs      : -RustArtifactDir (optional) — source directory for passkee_provider.dll +
+                   passkee-provider.exe. Defaults to the repo-local release path. If you
+                   build on WSL and validate on Windows, pass the UNC path, e.g.:
+                     -RustArtifactDir '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
     Outputs     : out\PassKee.Provider.msix
     Exit codes  : 0 = PASS, 1 = FAIL
 
     Reference: https://learn.microsoft.com/windows/msix/package/create-app-package-with-makeappx-tool
 #>
 [CmdletBinding()]
-param()
+param(
+    [string] $RustArtifactDir = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -34,14 +39,22 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Write-Host ''
 Write-Host '[build-msix] --- Step 1/5: Assert Rust build outputs ---'
 
-$releaseDir = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+if ([string]::IsNullOrEmpty($RustArtifactDir)) {
+    $releaseDir = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+} else {
+    $releaseDir = $RustArtifactDir
+}
 $providerDll = Join-Path $releaseDir 'passkee_provider.dll'
 $providerExe = Join-Path $releaseDir 'passkee-provider.exe'
+
+Write-Host "[build-msix] Rust artifact dir: $releaseDir"
 
 foreach ($required in @($providerDll, $providerExe)) {
     if (-not (Test-Path $required)) {
         Write-Host "[build-msix] FAIL: Required build output not found: $required" -ForegroundColor Red
-        Write-Host "[build-msix]   Did you run: cargo xwin build --target x86_64-pc-windows-msvc --release" -ForegroundColor Yellow
+        Write-Host "[build-msix]   On Windows with Rust installed: cargo build --target x86_64-pc-windows-msvc --release" -ForegroundColor Yellow
+        Write-Host "[build-msix]   On WSL2 (cross-compile):        cargo xwin build --target x86_64-pc-windows-msvc --release" -ForegroundColor Yellow
+        Write-Host "[build-msix]   If built on WSL2, run with: -RustArtifactDir '\\wsl.localhost\<distro>\...\target\x86_64-pc-windows-msvc\release'" -ForegroundColor Yellow
         exit 1
     }
     $size = (Get-Item $required).Length

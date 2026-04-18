@@ -20,6 +20,9 @@
                    reused for Steps 3 and 4 automatically — no repeated prompts).
                   -PfxPath (default: out\PassKee.Dev.pfx)
                   -MsixPath (default: out\PassKee.Provider.msix)
+                  -RustArtifactDir — override location of passkee_provider.dll / .exe. Use the
+                   WSL UNC path if cross-compiling from WSL2:
+                     '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
                   -DryRun — pre-flight only; skips all build/sign/install steps.
     Outputs     : Console output; final PASS or FAIL line; exit code 0/1.
     Exit codes  : 0 = PASS, 1 = FAIL
@@ -42,9 +45,10 @@
 #>
 [CmdletBinding()]
 param(
-    [SecureString] $PfxPassword = $null,
-    [string]       $PfxPath     = '',
-    [string]       $MsixPath    = '',
+    [SecureString] $PfxPassword     = $null,
+    [string]       $PfxPath         = '',
+    [string]       $MsixPath        = '',
+    [string]       $RustArtifactDir = '',
     [switch]       $DryRun
 )
 
@@ -114,10 +118,16 @@ Write-Host ''
 Write-Host '[validate-phase2] --- Pre-flight checks ---'
 
 # Check that the Rust release outputs exist — without them nothing else works.
-$releaseDir  = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+if ([string]::IsNullOrEmpty($RustArtifactDir)) {
+    $releaseDir = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+} else {
+    $releaseDir = $RustArtifactDir
+}
 $providerDll = Join-Path $releaseDir 'passkee_provider.dll'
 $providerExe = Join-Path $releaseDir 'passkee-provider.exe'
 $manifestFile = Join-Path $repoRoot 'src\PassKee.Provider\appx\Package.appxmanifest'
+
+Write-Host "[validate-phase2] Rust artifact dir: $releaseDir"
 
 $allOk = $true
 
@@ -132,7 +142,10 @@ foreach ($f in @($providerDll, $providerExe, $manifestFile)) {
 if (-not $allOk) {
     Write-Host ''
     Write-Host '[validate-phase2] FAIL: pre-flight checks — missing Rust build outputs.' -ForegroundColor Red
-    Write-Host '[validate-phase2]   Run: cargo xwin build --target x86_64-pc-windows-msvc --release' -ForegroundColor Yellow
+    Write-Host '[validate-phase2]   On Windows (Rust installed): cargo build --target x86_64-pc-windows-msvc --release' -ForegroundColor Yellow
+    Write-Host '[validate-phase2]   On WSL2 (cross-compile):     cargo xwin build --target x86_64-pc-windows-msvc --release' -ForegroundColor Yellow
+    Write-Host '[validate-phase2]   If built on WSL2, re-run with:' -ForegroundColor Yellow
+    Write-Host "[validate-phase2]     -RustArtifactDir '\\wsl.localhost\<distro>\home\<you>\...\target\x86_64-pc-windows-msvc\release'" -ForegroundColor Yellow
     Write-Host ''
     Write-Host '[validate-phase2] FAIL at step 0'
     exit 1
@@ -200,7 +213,11 @@ Invoke-Step 2 5 'Log Windows build info' {
 # ---------------------------------------------------------------------------
 Invoke-Step 3 5 'Build MSIX package' {
     $buildScript = Join-Path $scriptsDir 'build-msix.ps1'
-    & $buildScript
+    if ([string]::IsNullOrEmpty($RustArtifactDir)) {
+        & $buildScript
+    } else {
+        & $buildScript -RustArtifactDir $RustArtifactDir
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "build-msix.ps1 exited with code $LASTEXITCODE"
     }

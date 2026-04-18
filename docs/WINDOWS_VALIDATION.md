@@ -237,16 +237,24 @@ are Phase 2.2.
 
 | Requirement | Notes |
 |---|---|
-| Rust Windows DLL built | `cargo xwin build --target x86_64-pc-windows-msvc --release` from `src/PassKee.Provider/` (cross-compile from WSL2 is supported) |
+| Rust Windows DLL + EXE | `passkee_provider.dll` + `passkee-provider.exe` built for `x86_64-pc-windows-msvc`. Build on Windows (`cargo build --target x86_64-pc-windows-msvc --release`) or on WSL2 (`cargo xwin build …`). If you build on WSL, point the validator at the WSL UNC path — see below. |
 | Windows SDK | For `makeappx.exe` and `signtool.exe` (installed with Visual Studio Build Tools or standalone Win10/11 SDK) |
 | Admin PowerShell | Required **once** to install the dev cert into `Cert:\LocalMachine\TrustedPeople` |
 
 ### Unattended runbook
 
 ```powershell
-# One-time cert bootstrap + package + sign + install
+# Default — Rust artifacts expected in the repo-local release dir:
 .\scripts\validate-phase2.ps1
+
+# WSL cross-compile pattern — build on WSL, validate on Windows:
+.\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\Ubuntu\home\marco\personal\repo\PassKee\src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
 ```
+
+The WSL path form works because `build-msix.ps1` copies the DLL + EXE into its
+own temp staging dir before invoking `makeappx` — `\\wsl.localhost\…` is just
+a regular UNC source path to `Copy-Item`. The actual pack runs entirely on
+Windows-local paths.
 
 The orchestrator runs 5 steps: ensure-dev-cert → winver diag → build-msix →
 sign-msix → install-msix. It prompts once for a PFX password (`SecureString`)
