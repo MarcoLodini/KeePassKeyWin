@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using KeePass.Plugins;
 using KeePassLib;
+using KeePassLib.Security;
 using PassKee.Core.Storage;
 
 namespace PassKee.Plugin.Storage
@@ -42,7 +43,9 @@ namespace PassKee.Plugin.Storage
         public void Add(PasskeyRecord record)
         {
             var group = EnsurePasskeysGroup();
-            var entry = new PwEntry();
+            // KeePass's PwEntry has no parameterless ctor; we must request a fresh
+            // UUID + creation/modification timestamps for a newly minted entry.
+            var entry = new PwEntry(bCreateNewUuid: true, bSetTimes: true);
 
             entry.Strings.Set(KeyCredId,      new ProtectedString(false, record.CredentialId));
             entry.Strings.Set(KeyRpId,        new ProtectedString(false, record.RpId));
