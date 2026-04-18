@@ -82,11 +82,13 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 ## Phase 3 — End-to-end `MakeCredential`
 
-- [ ] CBOR decode of `MakeCredential` request
-- [ ] authData construction (flags byte, rpIdHash, signCount BE uint32, AAGUID, COSE_Key canonical CBOR)
-- [ ] Windows Hello UV via `WebAuthNPluginPerformUserVerification`
-- [ ] `passkee.createPasskey` IPC round-trip
-- [ ] webauthn.io from Edge: register succeeds, server-side attestation verification passes
+Code-side complete 2026-04-18 (Session 5). Linux tests green: 181 C#, 46 Rust, 0 clippy warnings. Live browser E2E still pending on Marco's Win11 box.
+
+- [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/PassKee.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard
+- [x] authData construction with real UV flag — `AuthDataBuilder.Build/BuildAssertion` now require explicit `userVerified` (no default); flag propagated from Rust-side UV result
+- [x] Windows Hello UV via `WebAuthNPluginPerformUserVerification` — dynamic LoadLibrary binding (stable-name-first, EXPERIMENTAL_ fallback), called inline on STA, response freed on every path, E_ABORT propagated on user cancel
+- [x] `passkee.makeCredentialRaw` IPC round-trip — new JSON-RPC method carries `{cbor, uv}`; returns `{cbor}` CTAP2 attestation object with **integer keys** `{1:"none", 2:authData, 3:{}}` per CTAP 2.1 §6.1 (NOT WebAuthn L3 §6.5.5 text-keyed shape — that's what webauthn.dll produces AFTER converting). Added error codes `-32030 UnsupportedAlgorithm`, `-32031 CredentialExcluded`.
+- [ ] webauthn.io from Edge: register succeeds, server-side attestation verification passes — **Marco-driven browser smoke test is Track 5; next session**
 
 ## Phase 4 — End-to-end `GetAssertion`
 
@@ -97,12 +99,13 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [ ] webauthn.io from Edge: login succeeds, signature verifies server-side
 - [ ] Settings page reflects credential adds/removes
 
-## Phase 5 — Polish + RS256
+## Phase 5 — Polish + RS256 + deferred hardening
 
 - [ ] RS256 (COSE `-257`) algorithm support
 - [ ] Plugin UI: list / delete passkeys from inside KeePass
 - [ ] Sidecar confirmation UI when KeePass is minimized
 - [ ] `credProps` extension
+- [ ] **⚠ Important — deferred from Phase 2.2**: plugin-side verification of `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature` against the op-signing public key returned by `WebAuthNPluginAddAuthenticator`. Currently we discard the key in `cmd_register` and accept all incoming requests. If Windows starts enforcing plugin-side verification in a future 26200.x servicing update, MakeCredential will start failing silently with no diagnostic. Implementation: cache the op-signing `pbOpSignPubKey` at register time (HKCU or MSIX localstate), verify ECDSA-P256 signature over the CBOR payload on every incoming COM call before dispatching. Keep an override env var for emergency bypass.
 
 ## Phase 6 — Distribution
 
