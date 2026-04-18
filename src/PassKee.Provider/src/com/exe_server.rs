@@ -401,6 +401,19 @@ fn to_utf16_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0u16)).collect()
 }
 
+/// RAII guard that calls `CoUninitialize` on drop. Pairs with a preceding
+/// `CoInitializeEx`. Ensures we balance the apartment init even if an
+/// early-return / error occurs between init and the scope end.
+#[cfg(windows)]
+struct ComUninitGuard;
+
+#[cfg(windows)]
+impl Drop for ComUninitGuard {
+    fn drop(&mut self) {
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+    }
+}
+
 /// Register PassKee as a passkey provider with Windows WebAuthn.
 ///
 /// Calls `EXPERIMENTAL_WebAuthNPluginAddAuthenticator` with our CLSID, a
@@ -418,6 +431,20 @@ pub fn cmd_register() -> Result<(), String> {
     use crate::com::authenticator_info::authenticator_get_info_cbor;
     use crate::com::types::WebauthnPluginAddAuthenticatorOptions;
     use crate::com::webauthn_ext;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+    // Initialise COM on this thread — the WebAuthN plugin API very likely
+    // routes through COM internally to validate the CLSID registration
+    // (devil's-advocate hypothesis #2). `main()` as invoked via
+    // `passkee-provider.exe register` never calls CoInitializeEx otherwise.
+    // S_FALSE (already initialised) is accepted; anything else is a hard
+    // stop. ComUninitGuard ensures CoUninitialize runs on every exit path.
+    let co_init_hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if co_init_hr.is_err() {
+        return Err(format!("CoInitializeEx(STA) failed: 0x{:08x}", co_init_hr.0 as u32));
+    }
+    // Ensure CoUninitialize runs on every exit path.
+    let _co_guard = ComUninitGuard;
 
     // Keep all owned data alive for the duration of the FFI call.
     let name_w  = to_utf16_null(AUTHENTICATOR_DISPLAY_NAME);
@@ -435,6 +462,25 @@ pub fn cmd_register() -> Result<(), String> {
         cb_authenticator_info:   info.len() as u32,
         pb_authenticator_info:   info.as_ptr(),
     };
+
+    // ── Diagnostic dump ──────────────────────────────────────────────────
+    // Prints the full state we're about to pass to webauthn.dll so when the
+    // call crashes we can see what was on the stack. If the runtime reads
+    // past our struct end, or mis-interprets a field, these values let us
+    // triangulate. Remove once registration is stable.
+    let resolved_symbol = webauthn_ext::resolved_add_symbol_name().unwrap_or("<bindings not loaded>");
+    eprintln!("[register] ==== diagnostic dump ====");
+    eprintln!("[register] Resolved symbol: {resolved_symbol}");
+    eprintln!("[register] Struct size:     {} bytes", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
+    eprintln!("[register] name_w   (LPCWSTR): {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
+    eprintln!("[register] clsid_w  (LPCWSTR): {:p} wchars={} \"{CLSID_STR}\"",                  clsid_w.as_ptr(), clsid_w.len());
+    eprintln!("[register] rp_id_w  (LPCWSTR): {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
+    eprintln!("[register] logo_w   (LPCWSTR): {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
+    eprintln!("[register] info     (PBYTE):   {:p} cbAuthenticatorInfo={}B",                    info.as_ptr(), info.len());
+    eprintln!("[register] ==== calling ... ====");
+    // Flush now — if we crash the buffered stderr may be lost.
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
 
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
         = std::ptr::null_mut();
@@ -463,6 +509,14 @@ pub fn cmd_register() -> Result<(), String> {
 #[cfg(windows)]
 pub fn cmd_unregister() -> Result<(), String> {
     use crate::com::webauthn_ext;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+    // Same rationale as cmd_register — initialise COM on this thread.
+    let co_init_hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    if co_init_hr.is_err() {
+        return Err(format!("CoInitializeEx(STA) failed: 0x{:08x}", co_init_hr.0 as u32));
+    }
+    let _co_guard = ComUninitGuard;
 
     // Two HRESULTs encode the same semantic "no such registration":
     //   0x80070490 = HRESULT_FROM_WIN32(ERROR_NOT_FOUND       = 1168)
