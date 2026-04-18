@@ -713,63 +713,102 @@ Write-Host "[validator] --- Step 4b: Reflection probe ---"
 
 $installedPluginDll = Join-Path $pluginDir "PassKee.dll"
 
-# Use a throwaway AppDomain-independent mechanism: ReflectionOnlyLoadFrom
-# doesn't resolve references by default, but GetTypes() throws a
-# ReflectionTypeLoadException whose LoaderExceptions tell us exactly which
-# referenced assembly failed. We catch both and surface them.
+# Inspect the DLL via System.Reflection.Metadata — pure metadata reader, no
+# runtime resolution, so it works on both Windows PowerShell 5.1 (net48 CLR)
+# and PowerShell 7+ (.NET 6+). Assembly.ReflectionOnlyLoadFrom is net48-only
+# and throws on PS7 with "ReflectionOnly loading is not supported on this
+# platform." We avoid that entirely by reading CLI metadata directly.
 $probeOk     = $false
 $probeDetail = ""
 try {
-    $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($installedPluginDll)
-    Write-Host "[validator] Loaded (reflection-only): $($asm.FullName)"
-
-    $types = $null
+    $stream   = [System.IO.File]::OpenRead($installedPluginDll)
+    $peReader = $null
     try {
-        $types = $asm.GetTypes()
-    } catch [System.Reflection.ReflectionTypeLoadException] {
-        $rtle = $_.Exception
-        $types = $rtle.Types | Where-Object { $_ -ne $null }
-        $loaderMsgs = @()
-        if ($rtle.LoaderExceptions) {
-            foreach ($le in $rtle.LoaderExceptions) {
-                if ($le -ne $null) { $loaderMsgs += "    $($le.GetType().Name): $($le.Message)" }
+        $peReader = New-Object System.Reflection.PortableExecutable.PEReader($stream)
+        $md       = $peReader.GetMetadataReader()
+
+        $asmDef   = $md.GetAssemblyDefinition()
+        $asmName  = $md.GetString($asmDef.Name)
+        $asmVer   = $asmDef.Version.ToString()
+        Write-Host "[validator] Loaded metadata: $asmName, Version=$asmVer"
+
+        # Walk all TypeDefinitions and find PassKee.PassKeeExt.
+        $allTypes   = @()
+        $passKeeExt = $null
+        foreach ($tdHandle in $md.TypeDefinitions) {
+            $td       = $md.GetTypeDefinition($tdHandle)
+            $tName    = $md.GetString($td.Name)
+            $tNs      = $md.GetString($td.Namespace)
+            $fullName = if ([string]::IsNullOrEmpty($tNs)) { $tName } else { "$tNs.$tName" }
+
+            # TypeAttributes.VisibilityMask = 0x7; Public = 0x1
+            $visibility = [int]$td.Attributes -band 0x7
+            $isPublic   = ($visibility -eq 1)
+            $isSealed   = (([int]$td.Attributes -band 0x100) -ne 0)
+
+            # BaseType can be TypeDefHandle, TypeRefHandle, or TypeSpecHandle.
+            $baseTypeName = ""
+            $baseHandle   = $td.BaseType
+            if ($baseHandle.IsNil -eq $false) {
+                switch ($baseHandle.Kind) {
+                    "TypeReference" {
+                        $tr   = $md.GetTypeReference([System.Reflection.Metadata.TypeReferenceHandle]$baseHandle)
+                        $bN   = $md.GetString($tr.Name)
+                        $bNs  = $md.GetString($tr.Namespace)
+                        $baseTypeName = if ([string]::IsNullOrEmpty($bNs)) { $bN } else { "$bNs.$bN" }
+                    }
+                    "TypeDefinition" {
+                        $bt   = $md.GetTypeDefinition([System.Reflection.Metadata.TypeDefinitionHandle]$baseHandle)
+                        $bN   = $md.GetString($bt.Name)
+                        $bNs  = $md.GetString($bt.Namespace)
+                        $baseTypeName = if ([string]::IsNullOrEmpty($bNs)) { $bN } else { "$bNs.$bN" }
+                    }
+                    default { $baseTypeName = "<$($baseHandle.Kind)>" }
+                }
+            }
+
+            $entry = [PSCustomObject]@{
+                FullName = $fullName
+                IsPublic = $isPublic
+                IsSealed = $isSealed
+                BaseType = $baseTypeName
+            }
+            $allTypes += $entry
+            if ($fullName -eq "PassKee.PassKeeExt") { $passKeeExt = $entry }
+        }
+
+        if ($null -eq $passKeeExt) {
+            # <Module> is always present — filter it for the error message.
+            $publicTypeNames = ($allTypes | Where-Object { $_.FullName -ne "<Module>" } | ForEach-Object { $_.FullName }) -join ", "
+            $probeDetail = "Type 'PassKee.PassKeeExt' not found in $installedPluginDll. Types present: $publicTypeNames"
+        } else {
+            Write-Host "[validator] Found type: $($passKeeExt.FullName) (base: $($passKeeExt.BaseType), public: $($passKeeExt.IsPublic), sealed: $($passKeeExt.IsSealed))"
+            if ($passKeeExt.BaseType -ne "KeePass.Plugins.Plugin") {
+                $probeDetail = "PassKeeExt base type is '$($passKeeExt.BaseType)', expected 'KeePass.Plugins.Plugin'."
+            } elseif (-not $passKeeExt.IsPublic) {
+                $probeDetail = "PassKeeExt is not public."
+            } else {
+                $probeOk = $true
             }
         }
-        if ($loaderMsgs.Count -gt 0) {
-            Write-Host "[validator] Loader exceptions encountered during GetTypes():" -ForegroundColor Yellow
-            $loaderMsgs | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+
+        # Also surface the assembly's reference list so we know what KeePass
+        # needs to resolve at load time. An entry for "KeePass, Version=..."
+        # whose version doesn't match the running KeePass.exe would explain a
+        # silent reject in KeePass's plugin-compatibility gate.
+        Write-Host "[validator] PassKee.dll references:"
+        foreach ($arHandle in $md.AssemblyReferences) {
+            $ar    = $md.GetAssemblyReference($arHandle)
+            $rName = $md.GetString($ar.Name)
+            Write-Host "    $rName, Version=$($ar.Version)"
         }
-    }
-
-    $passKeeExt = $null
-    if ($types) {
-        $passKeeExt = $types | Where-Object {
-            $_ -ne $null -and $_.FullName -eq "PassKee.PassKeeExt"
-        } | Select-Object -First 1
-    }
-
-    if ($null -eq $passKeeExt) {
-        $probeDetail = "Type 'PassKee.PassKeeExt' not found in $installedPluginDll. " +
-                       "Types present: " + (($types | ForEach-Object { $_.FullName }) -join ", ")
-    } else {
-        $baseName = if ($passKeeExt.BaseType) { $passKeeExt.BaseType.FullName } else { "<none>" }
-        Write-Host "[validator] Found type: $($passKeeExt.FullName) (base: $baseName, public: $($passKeeExt.IsPublic), sealed: $($passKeeExt.IsSealed))"
-        if ($baseName -ne "KeePass.Plugins.Plugin") {
-            $probeDetail = "PassKeeExt base type is '$baseName', expected 'KeePass.Plugins.Plugin'."
-        } elseif (-not $passKeeExt.IsPublic) {
-            $probeDetail = "PassKeeExt is not public."
-        } else {
-            $probeOk = $true
-        }
-    }
-
-    # Also surface the assembly's reference list so we know what KeePass needs to resolve at load time.
-    Write-Host "[validator] PassKee.dll references:"
-    foreach ($r in $asm.GetReferencedAssemblies()) {
-        Write-Host "    $($r.FullName)"
+    } finally {
+        if ($null -ne $peReader) { $peReader.Dispose() }
     }
 } catch {
     $probeDetail = "Reflection probe threw: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+} finally {
+    if ($null -ne $stream) { $stream.Close() }
 }
 
 if (-not $probeOk) {
