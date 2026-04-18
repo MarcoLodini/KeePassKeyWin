@@ -42,10 +42,12 @@ namespace PassKee.Core.Ipc
         public const int InternalError  = -32603;
 
         // Application-defined range: -32000 to -32099.
-        public const int HandshakeRequired = -32000;
-        public const int HandshakeInvalid  = -32001;
-        public const int VaultLocked       = -32010;
-        public const int CredentialNotFound = -32020;
+        public const int HandshakeRequired    = -32000;
+        public const int HandshakeInvalid     = -32001;
+        public const int VaultLocked          = -32010;
+        public const int CredentialNotFound   = -32020;
+        public const int UnsupportedAlgorithm = -32030;
+        public const int CredentialExcluded   = -32031;
     }
 
     // Per-connection mutable state threaded through each RPC dispatch.

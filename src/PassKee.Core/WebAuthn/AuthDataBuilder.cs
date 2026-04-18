@@ -33,7 +33,7 @@ namespace PassKee.Core.WebAuthn
         /// <param name="x">32-byte P-256 public key X coordinate.</param>
         /// <param name="y">32-byte P-256 public key Y coordinate.</param>
         /// <param name="userVerified">True if Windows Hello UV succeeded.</param>
-        public static byte[] Build(string rpId, byte[] credentialId, byte[] x, byte[] y, bool userVerified = true)
+        public static byte[] Build(string rpId, byte[] credentialId, byte[] x, byte[] y, bool userVerified)
         {
             if (rpId == null) throw new ArgumentNullException(nameof(rpId));
             if (credentialId == null || credentialId.Length == 0) throw new ArgumentException("credentialId must not be empty.", nameof(credentialId));
@@ -63,7 +63,7 @@ namespace PassKee.Core.WebAuthn
         /// <summary>
         /// Builds authenticatorData for a GetAssertion response (no attested credential data).
         /// </summary>
-        public static byte[] BuildAssertion(string rpId, bool userVerified = true)
+        public static byte[] BuildAssertion(string rpId, bool userVerified)
         {
             if (rpId == null) throw new ArgumentNullException(nameof(rpId));
 

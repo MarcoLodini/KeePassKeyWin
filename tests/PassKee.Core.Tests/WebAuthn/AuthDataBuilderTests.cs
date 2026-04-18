@@ -16,7 +16,7 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_StartsWithRpIdHash()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            var authData = AuthDataBuilder.Build(RpId, CredId, x, y);
+            var authData = AuthDataBuilder.Build(RpId, CredId, x, y, userVerified: true);
 
             var expectedHash = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(RpId));
             Assert.Equal(expectedHash, authData[..32]);
@@ -49,7 +49,7 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_SignCountIsZero()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            var authData = AuthDataBuilder.Build(RpId, CredId, x, y);
+            var authData = AuthDataBuilder.Build(RpId, CredId, x, y, userVerified: true);
 
             // signCount is bytes [33..36] big-endian uint32.
             Assert.Equal(0, authData[33]);
@@ -62,7 +62,7 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_AaguidIs16ZeroBytes()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            var authData = AuthDataBuilder.Build(RpId, CredId, x, y);
+            var authData = AuthDataBuilder.Build(RpId, CredId, x, y, userVerified: true);
 
             // AAGUID starts at byte 37.
             for (int i = 37; i < 53; i++)
@@ -73,7 +73,7 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_CredentialIdLengthAndBytesPresent()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            var authData = AuthDataBuilder.Build(RpId, CredId, x, y);
+            var authData = AuthDataBuilder.Build(RpId, CredId, x, y, userVerified: true);
 
             // credentialIdLength at bytes [53..54] big-endian uint16.
             int credIdLen = (authData[53] << 8) | authData[54];
@@ -87,7 +87,7 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_TotalLengthIsCorrect()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            var authData = AuthDataBuilder.Build(RpId, CredId, x, y);
+            var authData = AuthDataBuilder.Build(RpId, CredId, x, y, userVerified: true);
 
             // 32 + 1 + 4 + 16 + 2 + credId.Length + coseKey.Length
             // coseKey for P-256: 0xa5 header + 5 entries (5 small keys, 2 bstr32, 3 small values)
@@ -99,14 +99,14 @@ namespace PassKee.Core.Tests.WebAuthn
         public void Build_NullRpId_Throws()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            Assert.Throws<ArgumentNullException>(() => AuthDataBuilder.Build(null!, CredId, x, y));
+            Assert.Throws<ArgumentNullException>(() => AuthDataBuilder.Build(null!, CredId, x, y, userVerified: true));
         }
 
         [Fact]
         public void Build_EmptyCredentialId_Throws()
         {
             var (_, x, y) = EcdsaSigner.GenerateKeyPair();
-            Assert.Throws<ArgumentException>(() => AuthDataBuilder.Build(RpId, Array.Empty<byte>(), x, y));
+            Assert.Throws<ArgumentException>(() => AuthDataBuilder.Build(RpId, Array.Empty<byte>(), x, y, userVerified: true));
         }
 
         [Fact]
@@ -119,7 +119,7 @@ namespace PassKee.Core.Tests.WebAuthn
         [Fact]
         public void BuildAssertion_StartsWithRpIdHash()
         {
-            var authData = AuthDataBuilder.BuildAssertion(RpId);
+            var authData = AuthDataBuilder.BuildAssertion(RpId, userVerified: true);
             var expectedHash = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(RpId));
             Assert.Equal(expectedHash, authData[..32]);
         }
@@ -127,7 +127,7 @@ namespace PassKee.Core.Tests.WebAuthn
         [Fact]
         public void BuildAssertion_FlagsNoAtBit()
         {
-            var authData = AuthDataBuilder.BuildAssertion(RpId);
+            var authData = AuthDataBuilder.BuildAssertion(RpId, userVerified: true);
             byte flags = authData[32];
             Assert.True((flags & 0x40) == 0, "AT flag must not be set in assertion authData.");
         }
