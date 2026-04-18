@@ -80,12 +80,21 @@ namespace PassKee.Harness
         }
 
         /// <summary>
-        /// Performs a full MakeCredential round-trip through the plugin:
-        ///   1. Calls passkee.createPasskey on the plugin pipe.
-        ///   2. Injects the resulting credential into the CDP virtual authenticator store.
+        /// Performs a MakeCredential round-trip through the plugin pipe: calls
+        /// `passkee.createPasskey`, receives the credential id + COSE public key.
         ///
-        /// This is called by the test driver before navigating to the RP — or can be wired
-        /// to a CDP override hook when full CDP interception is available.
+        /// NOTE: this does NOT inject the credential into Chrome's CDP virtual
+        /// authenticator. Doing so would require handing Chrome a PKCS#8 private
+        /// key (CDP `WebAuthn.addCredential` has `privateKey` as a required field
+        /// and returns "Invalid parameters" without it), which contradicts the
+        /// Phase 0.5 design goal of keeping private keys inside the plugin. For
+        /// plugin-side verification the smoke test then calls `passkee.signAssertion`
+        /// directly via the pipe; Chrome's virtual authenticator is only needed so
+        /// the CDP WebSocket connects (see memory note "Harness --smoke mode
+        /// requires a live CDP target"). If a future browser-transparent flow needs
+        /// the credential visible to Chrome, call `InjectCredentialAsync` explicitly
+        /// with a synthesised private key — but that diverges Chrome's PK from the
+        /// plugin's authoritative PK and is not what Phase 0.5 validates.
         /// </summary>
         public async Task<string> CreatePasskeyAsync(
             string rpId, string rpName,
@@ -104,67 +113,48 @@ namespace PassKee.Harness
             }, ct);
 
             var obj = (JObject)(result ?? throw new InvalidOperationException("createPasskey returned null."));
-            var credentialId  = obj["credentialId"]!.Value<string>()!;
-            var publicKeyCose = obj["publicKeyCose"]!.Value<string>()!;
-            var authData      = obj["authData"]!.Value<string>()!;
+            var credentialId = obj["credentialId"]!.Value<string>()!;
 
             Console.WriteLine($"[Harness] Created credential: {credentialId}");
-
-            // Inject the new credential into Chrome's virtual authenticator store so
-            // the browser can use it for future GetAssertion calls.
-            await InjectCredentialAsync(credentialId, userHandle, publicKeyCose, rpId, ct);
-
             return credentialId;
         }
 
         /// <summary>
-        /// Injects a credential into the CDP virtual authenticator so Chrome knows about it
-        /// for discoverable credential enumeration during GetAssertion.
+        /// Injects a credential into Chrome's CDP virtual authenticator so the browser
+        /// can enumerate it during GetAssertion. Not used by the Phase 0.5 smoke test
+        /// (see the note on <see cref="CreatePasskeyAsync"/>); kept as a building block
+        /// for future browser-transparent flows that need Chrome to have an actual
+        /// signing key. Note that the PK passed here diverges Chrome's view from the
+        /// plugin's authoritative key unless the caller synthesises a fresh pair and
+        /// registers the public half with the plugin through some other channel.
+        ///
+        /// CDP's <c>WebAuthn.addCredential</c> requires <c>privateKey</c> as a PKCS#8
+        /// blob and rejects the call with "Invalid parameters" if it's missing —
+        /// the earlier version of this method omitted it and silently broke.
         /// </summary>
         public async Task InjectCredentialAsync(
             string credentialId, string userHandle,
-            string publicKeyCoseBase64, string rpId,
+            string privateKeyPkcs8Base64, string rpId,
             CancellationToken ct = default)
         {
             if (_authenticatorId == null)
                 throw new InvalidOperationException("Harness not started.");
-
-            // CDP AddCredential expects:
-            //   credentialId: base64
-            //   isResidentCredential: true
-            //   rpId: string
-            //   privateKey: PKCS#8 base64 (we don't have it here — Chrome manages its own private keys)
-            //   userHandle: base64
-            //   signCount: 0
-            //
-            // Note: since the plugin owns the private keys, we inject a stub credential
-            // into Chrome purely so it participates in discoverable credential enumeration.
-            // The actual signing is done by the plugin. For the harness flow, the signing
-            // happens via passkee.signAssertion before the CDP response is fed back.
-            //
-            // For full interception we'd need to override CDP's signing entirely — which
-            // requires the experimental WebAuthn.setResponseOverride or similar. For Phase 0.5
-            // the simplified flow is: drive Chrome to the registration page, call createPasskey
-            // via the pipe, then separately verify the signature via the pipe's signAssertion.
+            if (string.IsNullOrEmpty(privateKeyPkcs8Base64))
+                throw new ArgumentException("CDP requires a non-empty PKCS#8 privateKey.", nameof(privateKeyPkcs8Base64));
 
             Console.WriteLine($"[Harness] Injecting credential {credentialId} for rpId={rpId}");
 
-            // CDP AddCredential (Chromium 89+):
             await _cdp.CallAsync("WebAuthn.addCredential", new JObject
             {
                 ["authenticatorId"] = _authenticatorId,
                 ["credential"] = new JObject
                 {
-                    ["credentialId"]        = credentialId,
+                    ["credentialId"]         = credentialId,
                     ["isResidentCredential"] = true,
-                    ["rpId"]                = rpId,
-                    // privateKey: omit — Chrome will use the virtual authenticator's own key for
-                    // assertion signing. For full pass-through signing we'd replace this stub with
-                    // a real PKCS#8 blob, but that requires exporting the plugin's private key
-                    // which violates the "key never leaves plugin" constraint. Phase 0.5 validates
-                    // the plugin-side crypto separately via VaultHandler unit tests.
-                    ["userHandle"]  = userHandle,
-                    ["signCount"]   = 0,
+                    ["rpId"]                 = rpId,
+                    ["privateKey"]           = privateKeyPkcs8Base64,
+                    ["userHandle"]           = userHandle,
+                    ["signCount"]            = 0,
                 },
             }, ct);
         }
