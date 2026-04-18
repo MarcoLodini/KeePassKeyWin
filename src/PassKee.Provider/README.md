@@ -67,20 +67,34 @@ cargo build --target x86_64-pc-windows-msvc --release
 
 ## MSIX packaging (Windows only)
 
-Requires Windows 11 + Windows SDK (makeappx.exe, signtool.exe):
+Requires Windows 11 + Windows SDK (`makeappx.exe`, `signtool.exe`). The
+placeholders in `appx/Package.appxmanifest` are pre-filled for the PassKee
+dev cert (`CN=Marco Lodini, O=PassKee, C=IT`, Version `0.0.1.0`); see
+`docs/WINDOWS_VALIDATION.md` if you need to change them.
+
+One-command flow (builds MSIX → signs → installs → verifies):
 
 ```powershell
-# 1. Fill in placeholders in appx/Package.appxmanifest
-# 2. Copy assets and binaries into a staging directory
-# 3. Package:
-makeappx pack /d staging/ /p PassKee.Provider.msix
-# 4. Sign (test certificate):
-signtool sign /fd sha256 /a PassKee.Provider.msix
+.\scripts\validate-phase2.ps1
 ```
 
-## Placeholders in Package.appxmanifest
+Or run the steps individually:
 
-| Placeholder | Replace with |
-|---|---|
-| `PASSKEE_PUBLISHER_PLACEHOLDER` | `CN=<your cert subject>` |
-| `PASSKEE_VERSION_PLACEHOLDER` | `Major.Minor.Build.Revision` e.g. `0.0.1.0` |
+```powershell
+.\scripts\ensure-dev-cert.ps1   # first run only (needs admin); creates + trusts cert
+.\scripts\build-msix.ps1        # stages DLL + EXE + Assets\, runs makeappx
+.\scripts\sign-msix.ps1         # Publisher/Subject pre-check, then signtool
+.\scripts\install-msix.ps1      # Add-AppxPackage + Get-AppxPackage assertion
+```
+
+Outputs land in `out\` (gitignored): `PassKee.Provider.msix`, `PassKee.Dev.pfx`,
+`cert-thumbprint.txt`.
+
+### Rollback
+
+```powershell
+Remove-AppxPackage -Package (Get-AppxPackage -Name PassKee.Provider).PackageFullName
+$tp = Get-Content .\out\cert-thumbprint.txt
+Remove-Item "Cert:\CurrentUser\My\$tp"
+Remove-Item "Cert:\LocalMachine\TrustedPeople\$tp"
+```

@@ -66,24 +66,14 @@ if (-not (Test-Path $harnessProj)) {
     throw "Harness project not found at '$harnessProj'. Run from the repo root scripts\ directory."
 }
 
-# --- Run smoke test ---
-Write-Host "[smoke-test] Launching harness in --smoke mode..."
-$harnessArgs = @(
-    "run",
-    "--project", $harnessProj,
-    "-c", $Configuration,
-    "--no-build",   # assumes already built; remove if you want auto-build
-    "--",
-    "--nonce", $Nonce,
-    "--rp",    $RpId,
-    "--smoke"
-)
-
-# Build first to ensure the binary is up to date.
+# --- Build harness ---
 Write-Host "[smoke-test] Building harness ($Configuration)..."
 & dotnet build $harnessProj -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) { throw "Harness build failed." }
 
+# --- Run smoke test ---
+# Chrome is not required: --smoke mode uses the plugin pipe directly.
+Write-Host "[smoke-test] Launching harness in --smoke mode..."
 & dotnet run --project $harnessProj -c $Configuration --no-build -- `
     --nonce $Nonce `
     --rp    $RpId  `

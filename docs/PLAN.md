@@ -59,15 +59,18 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [x] `.cargo/config.toml` — `lld-link` linker + xwin SDK paths for `x86_64-pc-windows-msvc` cross-compilation
 - [x] `idl/pluginauthenticator.h` — reference header transcribed from Microsoft WebAuthn SDK
 
-**Pending Windows** (require a Windows 11 24H2 machine):
-- [ ] `cargo xwin build --target x86_64-pc-windows-msvc --release` — verify DLL links cleanly against real Windows SDK
-- [ ] `makeappx pack` + `signtool sign` — produce installable `.msix` with self-signed certificate
-- [ ] Sideload MSIX → verify COM registration activates (`DllGetClassObject` called by WebAuthn host)
-- [ ] Verify Settings → Accounts → Passkeys → Advanced options lists the provider
-- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake)
-- [ ] Runtime vtable validation: attach debugger, confirm `IPluginAuthenticator` method slots match production offsets
+**Phase 2.1 — MSIX install** (scripts wired; validated on Windows 11 via `.\scripts\validate-phase2.ps1`):
+- [x] `cargo xwin build --target x86_64-pc-windows-msvc --release` — DLL + EXE build cleanly (cross-compiled from WSL2)
+- [x] `makeappx pack` + `signtool sign` — `scripts/build-msix.ps1` + `scripts/sign-msix.ps1` with publisher/cert-subject pre-check
+- [x] Sideload MSIX → `scripts/install-msix.ps1` asserts `Get-AppxPackage` Publisher / Version / PackageFamilyName
 
-- [ ] `WebAuthNPluginAddAuthenticator` call on first activation
+**Phase 2.2 — Activation + COM live path** (deferred to next session):
+- [ ] `WebAuthNPluginAddAuthenticator` call on first activation (new `passkee-provider.exe add-authenticator` subcommand)
+- [ ] Verify Settings → Accounts → Passkeys → Advanced options lists the provider
+- [ ] STA-blocking-pipe-connect fix in `cf_create_instance` (eager COM object, lazy pipe connect on first MakeCredential)
+- [ ] Named-pipe connection test with live KeePass plugin (registry nonce handshake under live COM activation)
+- [ ] Runtime vtable validation: attach debugger, confirm `IPluginAuthenticator` method slots match production offsets
+- [ ] Tighten `WebauthNPluginOperationResponse` offset assertions in `src/com/types.rs` (currently `size >= 12` only)
 
 ## Phase 3 — End-to-end `MakeCredential`
 

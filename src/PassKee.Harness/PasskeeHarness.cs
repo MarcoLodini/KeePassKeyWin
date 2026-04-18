@@ -28,21 +28,28 @@ namespace PassKee.Harness
     public sealed class PasskeeHarness : IAsyncDisposable
     {
         private readonly PipeClient _pipe;
-        private readonly CdpClient _cdp;
+        private readonly CdpClient? _cdp;
         private string? _authenticatorId;
 
-        public PasskeeHarness(PipeClient pipe, CdpClient cdp)
+        public PasskeeHarness(PipeClient pipe, CdpClient? cdp = null)
         {
             _pipe = pipe;
             _cdp  = cdp;
         }
 
         /// <summary>
-        /// Installs the virtual authenticator in Chrome and registers CDP event handlers.
-        /// The harness is live after this returns — operations on any open tab will be intercepted.
+        /// Connects to the Chrome CDP virtual authenticator and registers event handlers.
+        /// When <c>_cdp</c> is <c>null</c> (smoke mode), this method is a no-op on the CDP
+        /// side — the pipe connection is already live and all smoke operations use it directly.
         /// </summary>
         public async Task StartAsync(CancellationToken ct = default)
         {
+            if (_cdp == null)
+            {
+                Console.WriteLine("[Harness] No CDP client — running pipe-only (smoke mode).");
+                return;
+            }
+
             // Enable the WebAuthn domain for this target.
             await _cdp.CallAsync("WebAuthn.enable", new JObject
             {
@@ -137,6 +144,10 @@ namespace PassKee.Harness
             string privateKeyPkcs8Base64, string rpId,
             CancellationToken ct = default)
         {
+            if (_cdp == null)
+                throw new InvalidOperationException(
+                    "InjectCredentialAsync requires a live CDP connection. " +
+                    "This method is for Phase 1+ browser-transparent flows and must not be called in smoke mode.");
             if (_authenticatorId == null)
                 throw new InvalidOperationException("Harness not started.");
             if (string.IsNullOrEmpty(privateKeyPkcs8Base64))
@@ -204,7 +215,7 @@ namespace PassKee.Harness
 
         public async ValueTask DisposeAsync()
         {
-            if (_authenticatorId != null)
+            if (_cdp != null && _authenticatorId != null)
             {
                 try
                 {

@@ -17,16 +17,12 @@
       5. Launches KeePass in the background against that vault.
       6. Polls HKCU:\Software\PassKee\HandshakeNonce until the plugin writes it
          (timeout: $TimeoutSec seconds).
-      7. Launches a headless Chrome instance (remote-debugging-port 19222) so
-         the harness CDP channel connects without a visible browser window.
-         The harness --smoke mode requires a live CDP target even though it never
-         performs browser gestures; this is Phase 0.5 harness design, not a
-         validate-phase05 choice.
+      7. (Step 7b removed in Phase 2.1) The harness --smoke mode no longer requires
+         a live Chrome CDP target; pipe-only operations are used throughout.
       8. Runs PassKee.Harness in --smoke mode: createPasskey -> listCredentials
          -> signAssertion -> deleteCredential.
       9. (Step 7) Verifies HKCU HandshakeNonce is cleared post-handshake.
-     10. Cleans up: kills KeePass + Chrome, deletes temp vault (unless
-         -KeepTempFiles).
+     10. Cleans up: kills KeePass, deletes temp vault (unless -KeepTempFiles).
      11. Prints final PASS or FAIL:<reason> and exits 0/1 accordingly.
          On FAIL, emits a diagnostic bundle (KeePass log, registry state,
          harness stdout).
@@ -73,11 +69,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# CDP port used for the headless Chrome instance spun up by this script.
-# Chosen to avoid collision with any real Chrome the user may have open.
-$Script:cdpPort             = 19222
 $Script:keepassPid          = $null
-$Script:chromePid           = $null
 $Script:tempDir             = $null
 $Script:harnessOut          = ""
 $Script:failReason          = ""
@@ -236,18 +228,6 @@ function Invoke-Cleanup {
             }
         } catch { }
         $Script:keepassPid = $null
-    }
-
-    # Kill headless Chrome if we launched it
-    if ($null -ne $Script:chromePid) {
-        try {
-            $cp = Get-Process -Id $Script:chromePid -ErrorAction SilentlyContinue
-            if ($null -ne $cp) {
-                Write-Host "[validator] Stopping Chrome (PID $($Script:chromePid))..."
-                Stop-Process -Id $Script:chromePid -Force -ErrorAction SilentlyContinue
-            }
-        } catch { }
-        $Script:chromePid = $null
     }
 
     # Read KeePass stdout/stderr into memory BEFORE deleting the temp dir so
@@ -1019,68 +999,10 @@ if ([string]::IsNullOrEmpty($nonce)) {
 Write-Host "[validator] Nonce found: $($nonce.Substring(0, [Math]::Min(8, $nonce.Length)))..."
 
 # ---------------------------------------------------------------------------
-# Step 7b — Launch headless Chrome for CDP channel
-# ---------------------------------------------------------------------------
-#
-# The PassKee.Harness --smoke mode establishes a Chrome DevTools Protocol
-# connection before running smoke operations. Even though the smoke test does
-# not navigate to any page or perform browser gestures, the harness requires
-# a live CDP target (this is Phase 0.5 harness design). We launch Chrome in
-# headless mode with remote-debugging-port on $cdpPort so the harness can
-# connect without a visible browser window.
-
-Write-Host ""
-Write-Host "[validator] --- Step 7b: Launch headless Chrome (port $($Script:cdpPort)) ---"
-
-# Try common Chrome/Edge paths in order of preference.
-$chromeCandidates = @(
-    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-    "$env:LocalAppData\Google\Chrome\Application\chrome.exe",
-    "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
-    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
-)
-$chromeBin = $null
-foreach ($c in $chromeCandidates) {
-    if (Test-Path $c) { $chromeBin = $c; break }
-}
-if ($null -eq $chromeBin) {
-    Fail "Chrome or Edge not found in standard locations. Install Chrome/Edge or add it to PATH."
-}
-Write-Host "[validator] Using browser: $chromeBin"
-
-$chromeArgs = @(
-    "--headless=new",
-    "--remote-debugging-port=$($Script:cdpPort)",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--disable-gpu",
-    "about:blank"
-)
-$chromeProc = Start-Process -FilePath $chromeBin -ArgumentList $chromeArgs -PassThru -WindowStyle Hidden
-$Script:chromePid = $chromeProc.Id
-Write-Host "[validator] Headless Chrome launched (PID $($chromeProc.Id))"
-
-# Give Chrome a moment to open the debug port before the harness connects.
-$chromeDeadline = (Get-Date).AddSeconds(15)
-$cdpReady = $false
-while ((Get-Date) -lt $chromeDeadline) {
-    try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$($Script:cdpPort)/json" `
-                -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-        if ($resp.StatusCode -eq 200) { $cdpReady = $true; break }
-    } catch { }
-    Start-Sleep -Milliseconds 500
-}
-if (-not $cdpReady) {
-    Fail "Chrome CDP port $($Script:cdpPort) did not become available within 15s."
-}
-Write-Host "[validator] Chrome CDP: ready"
-
-# ---------------------------------------------------------------------------
 # Step 8 — Run smoke test via harness
 # ---------------------------------------------------------------------------
+# Chrome is not required: the harness --smoke mode uses the plugin pipe directly.
+# CDP setup is skipped when --smoke is passed (Phase 2.1 harness decoupling).
 
 Write-Host ""
 Write-Host "[validator] --- Step 8: Smoke test ---"
@@ -1093,7 +1015,6 @@ $harnessArgs = @(
     "--",
     "--nonce",  $nonce,
     "--rp",     "webauthn.io",
-    "--port",   "$($Script:cdpPort)",
     "--smoke"
 )
 
@@ -1149,10 +1070,10 @@ Write-Host "PASS" -ForegroundColor Green
 exit 0
 
 } finally {
-    # Safety net: always clean up KeePass / Chrome / temp even if an unhandled
-    # exception bubbles out (e.g. from strict-mode or a Fail call that itself
-    # throws before Invoke-Cleanup runs).
-    if ($null -ne $Script:keepassPid -or $null -ne $Script:chromePid) {
+    # Safety net: always clean up KeePass / temp even if an unhandled exception
+    # bubbles out (e.g. from strict-mode or a Fail call that itself throws before
+    # Invoke-Cleanup runs).
+    if ($null -ne $Script:keepassPid) {
         Invoke-Cleanup
     }
 }

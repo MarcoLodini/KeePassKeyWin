@@ -13,6 +13,7 @@ using PassKee.Harness.Pipe;
 ///   1. KeePass is running with a .kdbx open and the PassKee plugin loaded.
 ///   2. Chrome (or Edge) is running with:
 ///        --remote-debugging-port=9222
+///      (Not required in --smoke mode; pipe-only operations are used.)
 ///   3. The HKCU handshake nonce has been written by the plugin to
 ///        HKEY_CURRENT_USER\Software\PassKee\HandshakeNonce
 ///      (the plugin writes this on Initialize(); read it from the registry or
@@ -24,6 +25,7 @@ using PassKee.Harness.Pipe;
 /// Modes:
 ///   (default) Interactive: connects, handshakes, then prints a menu.
 ///   --smoke   Smoke test: createPasskey then listCredentials then signAssertion, print PASS/FAIL.
+///             In --smoke mode Chrome/CDP is not required.
 /// </summary>
 
 var cts = new CancellationTokenSource();
@@ -54,7 +56,8 @@ var sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId;
 var pipeName  = $"PassKee.{sessionId}";
 
 Console.WriteLine($"[Harness] Pipe: {pipeName}");
-Console.WriteLine($"[Harness] CDP: localhost:{cdpPort}");
+if (!smokeTest)
+    Console.WriteLine($"[Harness] CDP: localhost:{cdpPort}");
 
 // --- Resolve nonce ---
 if (string.IsNullOrEmpty(nonce))
@@ -89,93 +92,123 @@ catch (Exception ex)
     return 1;
 }
 
-// --- Connect to Chrome CDP ---
-await using var cdp = new CdpClient();
-try
+// --- Connect to Chrome CDP (skipped in smoke mode) ---
+// In smoke mode all operations go directly through the plugin pipe; no browser
+// interaction is needed. cdp remains null and PasskeeHarness.StartAsync no-ops
+// the CDP setup path when _cdp == null.
+CdpClient? cdp = null;
+if (!smokeTest)
 {
-    Console.Write($"[Harness] Discovering Chrome target at port {cdpPort}... ");
-    var wsUrl = await ChromeTarget.GetFirstPageWebSocketUrlAsync(cdpPort);
-    Console.WriteLine($"OK ({wsUrl[..Math.Min(60, wsUrl.Length)]}...)");
-
-    await cdp.ConnectAsync(wsUrl, cts.Token);
-    Console.WriteLine("[Harness] CDP connected.");
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"\n[Harness] ERROR connecting to Chrome: {ex.Message}");
-    Console.Error.WriteLine($"Launch Chrome with: --remote-debugging-port={cdpPort}");
-    return 1;
-}
-
-// --- Start harness ---
-await using var harness = new PasskeeHarness(pipe, cdp);
-await harness.StartAsync(cts.Token);
-Console.WriteLine("[Harness] Virtual authenticator installed. Ready.");
-
-if (smokeTest)
-    return await RunSmokeTestAsync(harness, pipe, rpId, rpName, cts.Token);
-
-// --- Interactive mode ---
-Console.WriteLine();
-Console.WriteLine("Commands: create | list <rpId> | sign <credId> | quit");
-while (!cts.Token.IsCancellationRequested)
-{
-    Console.Write("> ");
-    var line = Console.ReadLine();
-    if (line == null || line is "quit" or "q") break;
-
-    var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-    if (parts.Length == 0) continue;
-
+    cdp = new CdpClient();
     try
     {
-        switch (parts[0])
-        {
-            case "create":
-            {
-                var credId = await harness.CreatePasskeyAsync(
-                    rpId, rpName,
-                    userHandle: Convert.ToBase64String(Guid.NewGuid().ToByteArray()),
-                    userName: "test@example.com",
-                    userDisplayName: "Test User",
-                    cts.Token);
-                Console.WriteLine($"Created: {credId}");
-                break;
-            }
-            case "list":
-            {
-                var rp = parts.Length > 1 ? parts[1] : rpId;
-                var result = await pipe.CallAsync("passkee.listCredentials",
-                    new Newtonsoft.Json.Linq.JObject { ["rpId"] = rp }, cts.Token);
-                Console.WriteLine(result?.ToString(Newtonsoft.Json.Formatting.Indented));
-                break;
-            }
-            case "sign":
-            {
-                var credId = parts.Length > 1 ? parts[1] : string.Empty;
-                if (string.IsNullOrEmpty(credId)) { Console.WriteLine("Usage: sign <credentialId>"); break; }
-                var ok = await harness.VerifyAssertionAsync(
-                    credId, rpId,
-                    authDataBytes: new byte[37],
-                    clientDataHash: System.Security.Cryptography.SHA256.HashData(
-                        System.Text.Encoding.UTF8.GetBytes("{}")),
-                    cts.Token);
-                Console.WriteLine(ok ? "Signature OK" : "Signature FAILED");
-                break;
-            }
-            default:
-                Console.WriteLine("Unknown command. Commands: create | list [rpId] | sign <credId> | quit");
-                break;
-        }
+        Console.Write($"[Harness] Discovering Chrome target at port {cdpPort}... ");
+        var wsUrl = await ChromeTarget.GetFirstPageWebSocketUrlAsync(cdpPort);
+        Console.WriteLine($"OK ({wsUrl[..Math.Min(60, wsUrl.Length)]}...)");
+
+        await cdp.ConnectAsync(wsUrl, cts.Token);
+        Console.WriteLine("[Harness] CDP connected.");
     }
     catch (Exception ex)
     {
-        Console.Error.WriteLine($"Error: {ex.Message}");
+        Console.Error.WriteLine($"\n[Harness] ERROR connecting to Chrome: {ex.Message}");
+        Console.Error.WriteLine($"Launch Chrome with: --remote-debugging-port={cdpPort}");
+        await cdp.DisposeAsync();
+        return 1;
     }
 }
 
-Console.WriteLine("[Harness] Exiting.");
-return 0;
+// --- Start harness ---
+// cdp is null in smoke mode; PasskeeHarness.StartAsync no-ops the CDP side when _cdp == null.
+// Disposal order matters: harness.DisposeAsync() calls WebAuthn.removeVirtualAuthenticator
+// via _cdp, so harness must dispose BEFORE cdp. We use explicit disposal here rather than
+// `await using var` because the latter interleaves with the outer `finally` in LIFO order,
+// which would dispose cdp first and turn removeVirtualAuthenticator into a silent no-op.
+var harness = new PasskeeHarness(pipe, cdp);
+int exitCode = 0;
+try
+{
+    await harness.StartAsync(cts.Token);
+    if (!smokeTest)
+        Console.WriteLine("[Harness] Virtual authenticator installed. Ready.");
+
+    if (smokeTest)
+    {
+        exitCode = await RunSmokeTestAsync(harness, pipe, rpId, rpName, cts.Token);
+    }
+    else
+    {
+        // --- Interactive mode ---
+        Console.WriteLine();
+        Console.WriteLine("Commands: create | list <rpId> | sign <credId> | quit");
+        while (!cts.Token.IsCancellationRequested)
+        {
+            Console.Write("> ");
+            var line = Console.ReadLine();
+            if (line == null || line is "quit" or "q") break;
+
+            var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) continue;
+
+            try
+            {
+                switch (parts[0])
+                {
+                    case "create":
+                    {
+                        var credId = await harness.CreatePasskeyAsync(
+                            rpId, rpName,
+                            userHandle: Convert.ToBase64String(Guid.NewGuid().ToByteArray()),
+                            userName: "test@example.com",
+                            userDisplayName: "Test User",
+                            cts.Token);
+                        Console.WriteLine($"Created: {credId}");
+                        break;
+                    }
+                    case "list":
+                    {
+                        var rp = parts.Length > 1 ? parts[1] : rpId;
+                        var result = await pipe.CallAsync("passkee.listCredentials",
+                            new Newtonsoft.Json.Linq.JObject { ["rpId"] = rp }, cts.Token);
+                        Console.WriteLine(result?.ToString(Newtonsoft.Json.Formatting.Indented));
+                        break;
+                    }
+                    case "sign":
+                    {
+                        var credId = parts.Length > 1 ? parts[1] : string.Empty;
+                        if (string.IsNullOrEmpty(credId)) { Console.WriteLine("Usage: sign <credentialId>"); break; }
+                        var ok = await harness.VerifyAssertionAsync(
+                            credId, rpId,
+                            authDataBytes: new byte[37],
+                            clientDataHash: System.Security.Cryptography.SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes("{}")),
+                            cts.Token);
+                        Console.WriteLine(ok ? "Signature OK" : "Signature FAILED");
+                        break;
+                    }
+                    default:
+                        Console.WriteLine("Unknown command. Commands: create | list [rpId] | sign <credId> | quit");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+            }
+        }
+
+        Console.WriteLine("[Harness] Exiting.");
+    }
+}
+finally
+{
+    // Dispose harness first so removeVirtualAuthenticator can reach the live CDP socket.
+    await harness.DisposeAsync();
+    if (cdp != null)
+        await cdp.DisposeAsync();
+}
+
+return exitCode;
 
 // --- Smoke test ---
 static async Task<int> RunSmokeTestAsync(

@@ -32,11 +32,11 @@ step by hand, run the consolidated validator:
 ```
 
 It pre-flights prerequisites, builds + installs the plugin, creates a throwaway
-vault from `scripts\fixtures\template.kdbx`, launches KeePass + a headless
-Chrome instance (smoke mode still needs a CDP target — see caveat under Step 5),
-runs the smoke test, verifies nonce teardown, and reports `PASS` / `FAIL: <reason>`
-with a diagnostic bundle. It does **not** cover Step 6 (browser scenario with
-webauthn.io) — that still requires manual gestures; run the steps below for that.
+vault from `scripts\fixtures\template.kdbx`, launches KeePass, runs the smoke
+test, verifies nonce teardown, and reports `PASS` / `FAIL: <reason>` with a
+diagnostic bundle. Chrome is no longer required for smoke mode (Phase 2.1
+decoupling). It does **not** cover Step 6 (browser scenario with webauthn.io)
+— that still requires manual gestures; run the steps below for that.
 
 Use `-DryRun` to run pre-flight only, or `-KeepTempFiles` to preserve the
 throwaway vault for debugging.
@@ -143,7 +143,7 @@ Expected output (exit code 0):
 [Harness] Pipe: PassKee.1
 [Harness] Connecting to plugin pipe... OK
 [Harness] Handshake complete.
-[Harness] CDP: localhost:9222
+[Harness] No CDP client — running pipe-only (smoke mode).
 [Smoke] createPasskey... OK (AbCdEf123456...)
 [Smoke] listCredentials... OK (1 credential(s))
 [Smoke] signAssertion... OK
@@ -151,13 +151,9 @@ Expected output (exit code 0):
 [Smoke] All checks PASSED.
 ```
 
-> The smoke test does not navigate a browser, but the harness **does** require a
-> live CDP target to be reachable at `localhost:9222` — `PasskeeHarness.StartAsync`
-> calls `WebAuthn.addVirtualAuthenticator` via CDP, and `CreatePasskeyAsync`
-> injects the credential into that virtual authenticator via `WebAuthn.addCredential`.
-> If Chrome is not already running with `--remote-debugging-port=9222`, run
-> Step 6's Chrome launch command first, or use the unattended validator (which
-> spins up a headless Chrome automatically).
+> As of Phase 2.1, `--smoke` mode is pipe-only: `PasskeeHarness.StartAsync`
+> skips CDP when the client is null, and `RunSmokeTestAsync` never touches the
+> browser. Chrome is only needed for the interactive/browser flow in Step 6.
 
 ---
 
@@ -230,6 +226,64 @@ if ($null -eq $nonce) { Write-Host "Nonce cleared — OK" } else { Write-Warning
 
 ---
 
+## Phase 2.1 — MSIX install runbook
+
+Phase 2.1 takes the Rust provider from "DLL compiles" to "MSIX installs cleanly
+on Win11 24H2". Scope explicitly stops at `Add-AppxPackage` success —
+`WebAuthNPluginAddAuthenticator` + Settings visibility + live COM activation
+are Phase 2.2.
+
+### Prerequisites (Phase 2.1-specific)
+
+| Requirement | Notes |
+|---|---|
+| Rust Windows DLL built | `cargo xwin build --target x86_64-pc-windows-msvc --release` from `src/PassKee.Provider/` (cross-compile from WSL2 is supported) |
+| Windows SDK | For `makeappx.exe` and `signtool.exe` (installed with Visual Studio Build Tools or standalone Win10/11 SDK) |
+| Admin PowerShell | Required **once** to install the dev cert into `Cert:\LocalMachine\TrustedPeople` |
+
+### Unattended runbook
+
+```powershell
+# One-time cert bootstrap + package + sign + install
+.\scripts\validate-phase2.ps1
+```
+
+The orchestrator runs 5 steps: ensure-dev-cert → winver diag → build-msix →
+sign-msix → install-msix. It prompts once for a PFX password (`SecureString`)
+and propagates it to the cert + signing scripts. Pass `-DryRun` for pre-flight
+only.
+
+### Expected PASS criteria
+
+- `Get-AppxPackage -Name PassKee.Provider` returns a package with:
+  - `Publisher = CN=Marco Lodini, O=PassKee, C=IT` (exact)
+  - `Version = 0.0.1.0`
+  - `PackageFamilyName` logged by `install-msix.ps1` — **save this**, Phase 2.2 needs it.
+
+### Rollback
+
+```powershell
+# Remove the installed package
+Remove-AppxPackage -Package (Get-AppxPackage -Name PassKee.Provider).PackageFullName
+
+# Remove the dev cert (thumbprint recorded in out\cert-thumbprint.txt)
+$tp = Get-Content .\out\cert-thumbprint.txt
+Remove-Item "Cert:\CurrentUser\My\$tp"
+Remove-Item "Cert:\LocalMachine\TrustedPeople\$tp"
+```
+
+### Known deferred (Phase 2.2)
+
+- **`WebAuthNPluginAddAuthenticator`** has no call site yet — the MSIX
+  installs cleanly but PassKee will **not** appear in Settings → Accounts →
+  Passkeys → Advanced options until that API is wired.
+- **STA-blocking pipe connect** in `cf_create_instance` (`src/PassKee.Provider/src/com/dll.rs`)
+  — will deadlock or timeout on first live COM activation. Deferred because
+  Phase 2.1 stops before activation.
+- **Runtime vtable validation** via debug-attach.
+
+---
+
 ## What this validates
 
 - ECDsa P-256 key generation and PKCS#8 storage in KeePass.
@@ -239,8 +293,11 @@ if ($null -eq $nonce) { Write-Host "Nonce cleared — OK" } else { Write-Warning
 - JSON-RPC 2.0 framing over named pipe.
 - HKCU nonce handshake.
 - PwEntry ↔ `PasskeyRecord` round-trip in the "Passkeys" group.
+- **Phase 2.1:** MSIX packaging, self-signed code signing, sideload install
+  (after running `validate-phase2.ps1`).
 
 It does **not** yet validate:
-- Windows Plug-in Authenticator registration (Rust sidecar, Phase 2).
-- MSIX packaging or code signing.
+- Windows Plug-in Authenticator **activation** (`WebAuthNPluginAddAuthenticator`, Phase 2.2).
+- Settings → Passkeys visibility.
+- Live COM activation of the DLL by the WebAuthn host.
 - RS256 algorithm support.

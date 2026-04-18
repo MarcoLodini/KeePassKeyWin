@@ -23,6 +23,7 @@ target/
 *.appxbundle
 *.msix
 *.msixbundle
+*.pfx
 AppPackages/
 BundleArtifacts/
 

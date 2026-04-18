@@ -27,8 +27,8 @@
   <!-- ── Identity ─────────────────────────────────────────────────────────── -->
   <Identity
     Name="PassKee.Provider"
-    Publisher="PASSKEE_PUBLISHER_PLACEHOLDER"
-    Version="PASSKEE_VERSION_PLACEHOLDER"
+    Publisher="CN=Marco Lodini, O=PassKee, C=IT"
+    Version="0.0.1.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
