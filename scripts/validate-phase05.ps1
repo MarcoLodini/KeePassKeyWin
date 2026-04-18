@@ -315,22 +315,22 @@ function Emit-DiagBundle {
         $f     = $item.Path
         if ($null -ne $lines) {
             if ($lines.Count -gt 0) {
-                Write-Host "[diag] KeePass $label ($f):" -ForegroundColor Yellow
+                Write-Host "[diag] KeePass ${label} ($f):" -ForegroundColor Yellow
                 $lines | ForEach-Object { Write-Host "  $_" }
             } else {
-                Write-Host "[diag] KeePass $label: (empty — KeePass did not write to $label)" -ForegroundColor Yellow
+                Write-Host "[diag] KeePass ${label}: (empty — KeePass did not write to ${label})" -ForegroundColor Yellow
             }
         } elseif ($null -ne $f -and (Test-Path $f)) {
             # File still on disk (e.g. KeepTempFiles mode, or cleanup not yet run)
             $diskLines = Get-Content $f -ErrorAction SilentlyContinue
             if ($diskLines) {
-                Write-Host "[diag] KeePass $label ($f):" -ForegroundColor Yellow
+                Write-Host "[diag] KeePass ${label} ($f):" -ForegroundColor Yellow
                 $diskLines | ForEach-Object { Write-Host "  $_" }
             } else {
-                Write-Host "[diag] KeePass $label: (empty)" -ForegroundColor Yellow
+                Write-Host "[diag] KeePass ${label}: (empty)" -ForegroundColor Yellow
             }
         } else {
-            Write-Host "[diag] KeePass $label: not available (KeePass may not have been launched or redirect file gone)" -ForegroundColor Yellow
+            Write-Host "[diag] KeePass ${label}: not available (KeePass may not have been launched or redirect file gone)" -ForegroundColor Yellow
         }
     }
 
@@ -392,7 +392,7 @@ function Emit-DiagBundle {
                     $pre  = if ($Script:keepassConfigSnapshot -match "<$tag>(.*?)</$tag>") { $Matches[0] } else { "(absent)" }
                     $post = if ($postRunXml -match "<$tag>(.*?)</$tag>") { $Matches[0] } else { "(absent)" }
                     if ($pre -ne $post) {
-                        Write-Host "  $xp:"
+                        Write-Host "  ${xp}:"
                         Write-Host "    before: $pre"
                         Write-Host "    after : $post"
                     }
