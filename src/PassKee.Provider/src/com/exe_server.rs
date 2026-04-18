@@ -427,10 +427,13 @@ impl Drop for ComUninitGuard {
 /// heap-allocated response struct — we free it immediately via
 /// `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. The key is
 /// intentionally discarded (signature-verification on incoming plugin
-/// requests is a Phase 3 non-goal; see MEMORY.md).
+/// requests is a Phase 5 non-goal; see MEMORY.md).
 ///
-/// Idempotence: the Windows API is documented idempotent — repeated calls
-/// with the same CLSID update the existing registration.
+/// Idempotence: Microsoft's docs claim re-register updates an existing
+/// registration. Empirically on Win11 25H2 26200.8037 the API returns
+/// `NTE_EXISTS` (0x8009_000F) instead. We emulate atomic-refresh: on
+/// NTE_EXISTS, call `remove_authenticator` (best-effort) then retry Add
+/// once. Any HRESULT other than S_OK or NTE_EXISTS is a hard error.
 #[cfg(windows)]
 pub fn cmd_register() -> Result<(), String> {
     use crate::com::authenticator_info::authenticator_get_info_cbor;
@@ -489,6 +492,11 @@ pub fn cmd_register() -> Result<(), String> {
     use std::io::Write;
     let _ = std::io::stderr().flush();
 
+    // HRESULT the EXPERIMENTAL_ API returns when our CLSID is already
+    // registered. Documented "re-register updates existing" semantics are
+    // not implemented by the runtime — we must emulate via remove+retry.
+    const HR_NTE_EXISTS: u32 = 0x8009_000F;
+
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
         = std::ptr::null_mut();
 
@@ -499,7 +507,28 @@ pub fn cmd_register() -> Result<(), String> {
     // free_add_authenticator_response is a no-op on null.
     webauthn_ext::free_add_authenticator_response(response_ptr);
 
-    if hr.is_err() {
+    if hr.0 as u32 == HR_NTE_EXISTS {
+        eprintln!(
+            "[register] NTE_EXISTS (0x8009000f) — stale registration present; removing and retrying Add."
+        );
+
+        // Best-effort unregister. If it fails (shouldn't), the retry will
+        // surface the real error code.
+        let _ = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _);
+
+        let mut retry_response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
+            = std::ptr::null_mut();
+        let hr_retry = webauthn_ext::add_authenticator(&opts, &mut retry_response_ptr)?;
+        webauthn_ext::free_add_authenticator_response(retry_response_ptr);
+
+        if hr_retry.is_err() {
+            return Err(format!(
+                "WebAuthNPluginAddAuthenticator failed after remove+retry: 0x{:08x}",
+                hr_retry.0 as u32,
+            ));
+        }
+        eprintln!("[register] remove+retry succeeded.");
+    } else if hr.is_err() {
         return Err(format!(
             "WebAuthNPluginAddAuthenticator failed: 0x{:08x}",
             hr.0 as u32,
