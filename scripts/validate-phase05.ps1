@@ -201,10 +201,15 @@ $keepassExe = Join-Path $KeePassDir "KeePass.exe"
 $ok = Test-Path $keepassExe
 $allOk = $allOk -and (Write-Check "KeePass.exe at $KeePassDir" $ok $(if (-not $ok) { "(not found)" } else { "" }))
 
-# 1b. .NET 8 SDK
-$dotnetVer = & dotnet --version 2>&1
-$dotnet8Ok = ($dotnetVer -match "^8\.")
-$allOk = $allOk -and (Write-Check ".NET 8 SDK on PATH (dotnet --version)" $dotnet8Ok "($dotnetVer)")
+# 1b. .NET SDK >= 8 (8, 9, 10+ all build net8.0 targets via forward-compat).
+# Check `dotnet --list-sdks` rather than `dotnet --version` so a global.json
+# pinning to an older SDK doesn't hide a usable SDK being installed.
+$dotnetSdks  = & dotnet --list-sdks 2>&1
+$dotnetSdkOk = @($dotnetSdks | Where-Object {
+    if ($_ -match "^(\d+)\.") { [int]$Matches[1] -ge 8 } else { $false }
+}).Count -gt 0
+$sdkDetail   = if ($dotnetSdkOk) { "(>= 8 found)" } else { "(no 8+ SDK)" }
+$allOk = $allOk -and (Write-Check ".NET SDK >= 8 installed (dotnet --list-sdks)" $dotnetSdkOk $sdkDetail)
 
 # 1c. .NET Framework 4.8 (registry)
 $ndpPath   = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
