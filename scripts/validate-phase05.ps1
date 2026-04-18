@@ -675,12 +675,35 @@ if (-not (Test-Path $pluginDir)) {
 }
 
 $srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\Release\net48"
+
+# Purge any stale KeePass.dll/pdb stub files left behind by a previous Linux
+# (KeePassStub) build. Current PassKee.Plugin.csproj has <Private>false</Private>
+# on the KeePassStub ProjectReference so NEW builds won't produce a stub in
+# the output dir, but the file can linger from an earlier build that didn't
+# have that flag. Deploying it alongside PassKee.dll loads a second "KeePass"
+# assembly (v1.0.0.0, unsigned) into KeePass's AppDomain; the CLR probing
+# path picks it up to satisfy PassKee.dll's weak-named KeePass reference and
+# PassKeeExt.BaseType resolves to the stub's `Plugin`, not the real one.
+# KeePass's `IsSubclassOf(typeof(real Plugin))` then returns false and the
+# plugin is silently skipped — same class of silent-reject bug as the
+# VERSIONINFO ProductName gate, so we purge defensively.
+foreach ($stale in @("KeePass.dll", "KeePass.pdb")) {
+    $stalePath = Join-Path $srcDir $stale
+    if (Test-Path $stalePath) {
+        Write-Host "[validator] Purging stale Linux-build stub: $stale"
+        Remove-Item $stalePath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Copy every DLL from the plugin build output. PassKee.dll depends on
 # PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's transitive
 # polyfill family (System.Buffers, System.Numerics.Vectors,
 # System.Runtime.CompilerServices.Unsafe); missing any of them makes KeePass
 # silently reject the plugin at load time. Wildcard-copy covers future deps.
-$dlls = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File)
+# We explicitly exclude KeePass.dll as a second safeguard in case the purge
+# above didn't catch it for any reason (permissions, file-locked, etc.).
+$dlls = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File |
+          Where-Object { $_.Name -ne "KeePass.dll" })
 if ($dlls.Count -eq 0) {
     Fail "No DLLs found in build output: $srcDir"
 }

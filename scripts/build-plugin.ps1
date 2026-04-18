@@ -106,12 +106,30 @@ $buildArgs = @(
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)." }
 
 # --- Collect outputs ---
+$srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\$Configuration\net48"
+
+# Purge any stale KeePass.dll/pdb stub left behind by an earlier Linux build.
+# Modern builds have <Private>false</Private> on the KeePassStub ProjectReference
+# so new builds won't emit a stub, but a stub file from a previous build can
+# linger in the output directory and get copied into Plugins\, where it
+# satisfies PassKee.dll's weak-named KeePass reference instead of the running
+# KeePass.exe — making IsSubclassOf(Plugin) return false and silently
+# preventing plugin load. Purge defensively.
+foreach ($stale in @("KeePass.dll", "KeePass.pdb")) {
+    $stalePath = Join-Path $srcDir $stale
+    if ((Test-Path $stalePath) -and -not $DryRun) {
+        Write-Host "[build-plugin] Purging stale Linux-build stub: $stale"
+        Remove-Item $stalePath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Copy every DLL from the plugin build output. PassKee.dll depends on
 # PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's polyfill family
 # (System.Buffers, System.Numerics.Vectors, System.Runtime.CompilerServices.Unsafe);
 # missing any of them makes KeePass silently reject the plugin at load time.
-$srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\$Configuration\net48"
-$dlls   = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File)
+# Explicitly exclude KeePass.dll as a second safeguard.
+$dlls   = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File |
+            Where-Object { $_.Name -ne "KeePass.dll" })
 if ($dlls.Count -eq 0) {
     throw "No DLLs found in build output: $srcDir"
 }
