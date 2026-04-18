@@ -88,6 +88,10 @@ $Script:keepassStdoutPath   = $null     # saved so Emit-DiagBundle works after c
 $Script:keepassStderrPath   = $null
 $Script:keepassStdoutLines  = $null     # content read before temp dir is deleted
 $Script:keepassStderrLines  = $null
+$Script:fusionLogDir        = $null     # per-run Fusion log capture directory
+$Script:fusionLogEnabled    = $false    # whether we successfully flipped the Fusion registry keys
+$Script:fusionLogPathBefore = $null     # prior value of HKLM\...\Fusion\LogPath (restore at cleanup)
+$Script:fusionLogEntries    = @()       # captured bind attempts after run
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -154,9 +158,10 @@ namespace PassKee {
 }
 
 function Get-KeePassWindows {
-    param([int] $Pid)
+    # $Pid is a PowerShell automatic (read-only) — use $ProcessId instead.
+    param([int] $ProcessId)
     try {
-        $wins = [PassKee.WinEnum]::GetWindowsForPid($Pid)
+        $wins = [PassKee.WinEnum]::GetWindowsForPid($ProcessId)
         return $wins
     } catch {
         return @()
@@ -202,7 +207,7 @@ function Invoke-Cleanup {
 
                 # Enumerate all top-level windows owned by KeePass PID.
                 # Reveals hidden modal dialogs (e.g. "unsigned plugin?" confirmation).
-                $wins = Get-KeePassWindows -Pid $Script:keepassPid
+                $wins = Get-KeePassWindows -ProcessId $Script:keepassPid
                 if ($wins.Count -gt 0) {
                     Write-Host "  Top-level windows ($($wins.Count)):" -ForegroundColor Yellow
                     foreach ($w in $wins) {
@@ -256,6 +261,47 @@ function Invoke-Cleanup {
         if (Test-Path $Script:keepassStderrPath) {
             $Script:keepassStderrLines = Get-Content $Script:keepassStderrPath -ErrorAction SilentlyContinue
         }
+    }
+
+    # Snapshot Fusion log contents (assembly-bind attempts that succeeded or
+    # failed during KeePass's plugin scan) BEFORE temp dir is deleted.
+    # Fusion writes one HTML file per bind attempt into LogPath\{AppDomain}\.
+    if ((Get-Variable -Name "fusionLogDir" -Scope Script -ErrorAction SilentlyContinue) -and
+        $null -ne $Script:fusionLogDir -and (Test-Path $Script:fusionLogDir)) {
+        try {
+            $fusionFiles = @(Get-ChildItem -Path $Script:fusionLogDir -Recurse -File -Filter "*.htm*" -ErrorAction SilentlyContinue)
+            if ($fusionFiles.Count -gt 0) {
+                $Script:fusionLogEntries = @()
+                foreach ($f in $fusionFiles) {
+                    $raw = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+                    if ($null -ne $raw) {
+                        # Strip HTML to readable text. Fusion uses <br> for line breaks and wraps everything in <html><body>.
+                        $text = $raw -replace '<br\s*/?>', "`n" -replace '<[^>]+>', '' -replace '&nbsp;', ' ' -replace '&lt;', '<' -replace '&gt;', '>' -replace '&amp;', '&'
+                        $Script:fusionLogEntries += [PSCustomObject]@{
+                            File = $f.Name
+                            Text = ($text.Trim() -split "`r?`n" | Where-Object { $_ -match '\S' }) -join "`n  "
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    # Restore Fusion log registry state regardless of what we did.
+    if ((Get-Variable -Name "fusionLogEnabled" -Scope Script -ErrorAction SilentlyContinue) -and $Script:fusionLogEnabled) {
+        try {
+            $fusionKey = "HKLM:\SOFTWARE\Microsoft\Fusion"
+            Set-ItemProperty -Path $fusionKey -Name "EnableLog"        -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $fusionKey -Name "LogFailures"      -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $fusionKey -Name "ForceLog"         -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $fusionKey -Name "LogResourceBinds" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            if ($null -ne $Script:fusionLogPathBefore) {
+                Set-ItemProperty -Path $fusionKey -Name "LogPath" -Value $Script:fusionLogPathBefore -Type String -ErrorAction SilentlyContinue
+            } else {
+                Remove-ItemProperty -Path $fusionKey -Name "LogPath" -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $Script:fusionLogEnabled = $false
     }
 
     # Delete temp directory (unless user asked to keep it)
@@ -442,6 +488,35 @@ function Emit-DiagBundle {
         Write-Host "  (error reading event log: $_)"
     }
 
+    # CLR Fusion log: assembly-bind attempts captured during the run.
+    # Each file is one bind attempt (including failures). This is the
+    # authoritative record of what KeePass's plugin loader actually tried
+    # to load and whether the CLR could resolve it.
+    Write-Host "[diag] CLR Fusion log (assembly binds during run):" -ForegroundColor Yellow
+    $fusionEntries = $null
+    if (Get-Variable -Name "fusionLogEntries" -Scope Script -ErrorAction SilentlyContinue) {
+        $fusionEntries = $Script:fusionLogEntries
+    }
+    if ($null -eq $fusionEntries -or $fusionEntries.Count -eq 0) {
+        Write-Host "  (no fusion log entries captured — either no binds during run, or Fusion logging wasn't enabled)"
+    } else {
+        # Filter to entries that mention PassKee specifically (or show failures).
+        # The full log is often huge; this keeps the bundle focused.
+        $interesting = @($fusionEntries | Where-Object {
+            $_.Text -match 'PassKee' -or $_.Text -match 'FAILED' -or $_.Text -match 'error'
+        })
+        if ($interesting.Count -eq 0) {
+            Write-Host "  ($($fusionEntries.Count) bind(s) captured; none match PassKee / failure. First 3 shown):"
+            $interesting = $fusionEntries | Select-Object -First 3
+        } else {
+            Write-Host "  ($($interesting.Count) of $($fusionEntries.Count) bind(s) relate to PassKee or failed):"
+        }
+        foreach ($e in $interesting) {
+            Write-Host "  --- $($e.File) ---" -ForegroundColor Yellow
+            Write-Host "  $($e.Text)"
+        }
+    }
+
     Write-Host "--- End diagnostic bundle ---" -ForegroundColor Yellow
 }
 
@@ -624,6 +699,85 @@ foreach ($dll in $dlls) {
 Write-Host "[validator] Plugin files installed: OK ($($dlls.Count) DLL(s))"
 
 # ---------------------------------------------------------------------------
+# Step 4b — Reflection probe: verify PassKee.PassKeeExt is discoverable
+# ---------------------------------------------------------------------------
+# KeePass silently skips plugin DLLs whose main type can't be resolved. If
+# something about the build produced a DLL without the expected type (wrong
+# namespace, private class, missing base-class reference), we'd never see an
+# error — the plugin just wouldn't appear. Catch that here, before launching
+# KeePass, by reflection-loading the installed DLL and checking for the
+# `PassKee.PassKeeExt` type and its `KeePass.Plugins.Plugin` base.
+
+Write-Host ""
+Write-Host "[validator] --- Step 4b: Reflection probe ---"
+
+$installedPluginDll = Join-Path $pluginDir "PassKee.dll"
+
+# Use a throwaway AppDomain-independent mechanism: ReflectionOnlyLoadFrom
+# doesn't resolve references by default, but GetTypes() throws a
+# ReflectionTypeLoadException whose LoaderExceptions tell us exactly which
+# referenced assembly failed. We catch both and surface them.
+$probeOk     = $false
+$probeDetail = ""
+try {
+    $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($installedPluginDll)
+    Write-Host "[validator] Loaded (reflection-only): $($asm.FullName)"
+
+    $types = $null
+    try {
+        $types = $asm.GetTypes()
+    } catch [System.Reflection.ReflectionTypeLoadException] {
+        $rtle = $_.Exception
+        $types = $rtle.Types | Where-Object { $_ -ne $null }
+        $loaderMsgs = @()
+        if ($rtle.LoaderExceptions) {
+            foreach ($le in $rtle.LoaderExceptions) {
+                if ($le -ne $null) { $loaderMsgs += "    $($le.GetType().Name): $($le.Message)" }
+            }
+        }
+        if ($loaderMsgs.Count -gt 0) {
+            Write-Host "[validator] Loader exceptions encountered during GetTypes():" -ForegroundColor Yellow
+            $loaderMsgs | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+        }
+    }
+
+    $passKeeExt = $null
+    if ($types) {
+        $passKeeExt = $types | Where-Object {
+            $_ -ne $null -and $_.FullName -eq "PassKee.PassKeeExt"
+        } | Select-Object -First 1
+    }
+
+    if ($null -eq $passKeeExt) {
+        $probeDetail = "Type 'PassKee.PassKeeExt' not found in $installedPluginDll. " +
+                       "Types present: " + (($types | ForEach-Object { $_.FullName }) -join ", ")
+    } else {
+        $baseName = if ($passKeeExt.BaseType) { $passKeeExt.BaseType.FullName } else { "<none>" }
+        Write-Host "[validator] Found type: $($passKeeExt.FullName) (base: $baseName, public: $($passKeeExt.IsPublic), sealed: $($passKeeExt.IsSealed))"
+        if ($baseName -ne "KeePass.Plugins.Plugin") {
+            $probeDetail = "PassKeeExt base type is '$baseName', expected 'KeePass.Plugins.Plugin'."
+        } elseif (-not $passKeeExt.IsPublic) {
+            $probeDetail = "PassKeeExt is not public."
+        } else {
+            $probeOk = $true
+        }
+    }
+
+    # Also surface the assembly's reference list so we know what KeePass needs to resolve at load time.
+    Write-Host "[validator] PassKee.dll references:"
+    foreach ($r in $asm.GetReferencedAssemblies()) {
+        Write-Host "    $($r.FullName)"
+    }
+} catch {
+    $probeDetail = "Reflection probe threw: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+}
+
+if (-not $probeOk) {
+    Fail "Plugin DLL reflection probe failed. $probeDetail"
+}
+Write-Host "[validator] Reflection probe: OK"
+
+# ---------------------------------------------------------------------------
 # Step 5 — Create throwaway .kdbx in TEMP
 # ---------------------------------------------------------------------------
 
@@ -753,6 +907,35 @@ if ($null -ne $Script:keepassConfigSnapshot) {
     Write-Host "[validator] KeePass.config.xml created with diagnostics enabled."
 }
 
+# 5b-iii. Enable CLR Fusion logging so we capture assembly-bind failures.
+# KeePass's plugin loader swallows BadImageFormat / FileLoad / TypeLoad
+# exceptions without surfacing them anywhere a user can see. Fusion log
+# records every assembly bind attempt at the CLR level — including the ones
+# that fail and cause KeePass to silently skip a plugin. Requires admin
+# registry access under HKLM\SOFTWARE\Microsoft\Fusion; the validator is
+# already assumed to be running elevated (Program Files write access).
+$fusionLogDir = Join-Path $Script:tempDir "fusionlog"
+New-Item -ItemType Directory -Path $fusionLogDir -Force | Out-Null
+$Script:fusionLogDir = $fusionLogDir
+$Script:fusionLogPathBefore = $null
+
+try {
+    $fusionKey = "HKLM:\SOFTWARE\Microsoft\Fusion"
+    # Preserve any existing LogPath so we can restore it at cleanup.
+    $Script:fusionLogPathBefore = (Get-ItemProperty -Path $fusionKey -Name "LogPath" -ErrorAction SilentlyContinue).LogPath
+    Set-ItemProperty -Path $fusionKey -Name "EnableLog"        -Value 1 -Type DWord
+    Set-ItemProperty -Path $fusionKey -Name "LogFailures"      -Value 1 -Type DWord
+    Set-ItemProperty -Path $fusionKey -Name "ForceLog"         -Value 1 -Type DWord
+    Set-ItemProperty -Path $fusionKey -Name "LogResourceBinds" -Value 1 -Type DWord
+    # Fusion requires a trailing backslash on LogPath.
+    Set-ItemProperty -Path $fusionKey -Name "LogPath"   -Value ($fusionLogDir + "\") -Type String
+    Write-Host "[validator] Fusion log enabled -> $fusionLogDir"
+    $Script:fusionLogEnabled = $true
+} catch {
+    Write-Warning "[validator] Could not enable Fusion log (run elevated?): $($_.Exception.Message)"
+    $Script:fusionLogEnabled = $false
+}
+
 # ---------------------------------------------------------------------------
 # Step 6 — Launch KeePass in background
 # ---------------------------------------------------------------------------
@@ -819,7 +1002,7 @@ while ((Get-Date) -lt $deadline) {
         try {
             $kpNow = Get-Process -Id $Script:keepassPid -ErrorAction SilentlyContinue
             if ($null -ne $kpNow) {
-                $wins = Get-KeePassWindows -Pid $Script:keepassPid
+                $wins = Get-KeePassWindows -ProcessId $Script:keepassPid
                 foreach ($w in $wins) {
                     $entry = "t=$([int]((Get-Date) - $Script:runStart).TotalSeconds)s  HWND=$($w[0])  title='$($w[1])'  class='$($w[2])'  $($w[3])"
                     if (-not ($Script:keepassWindowTitles -contains $entry)) {
