@@ -82,17 +82,27 @@
           The Windows WebAuthn API resolves the COM server by this CLSID.
 
           ThreadingModel: STA — matches the IPluginAuthenticator contract.
-          See: https://learn.microsoft.com/en-us/windows/win32/com/single-threaded-apartments
+
+          Element choice: windows.comInProcessServer / com:ComInProcessServer is
+          the correct category for in-proc DLL servers. The alternative
+          `windows.comServer` / `com:ComServer` element family only supports
+          out-of-process servers (ExeServer, SurrogateServer, TreatAsClass,
+          ProgId) — makeappx rejects <com:InProcessServer> under <com:ComServer>
+          with schema error 0x80080204.
+
+          Note `Path` is an ATTRIBUTE of com:Class here, not a child element.
+
+          Schema docs:
+            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com-cominprocessserver
+            https://learn.microsoft.com/windows/win32/com/single-threaded-apartments
         -->
-        <com:Extension Category="windows.comServer">
-          <com:ComServer>
-            <com:InProcessServer>
-              <com:Path>passkee_provider.dll</com:Path>
-              <com:Class
-                Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
-                ThreadingModel="STA" />
-            </com:InProcessServer>
-          </com:ComServer>
+        <com:Extension Category="windows.comInProcessServer">
+          <com:ComInProcessServer>
+            <com:Class
+              Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
+              Path="passkee_provider.dll"
+              ThreadingModel="STA" />
+          </com:ComInProcessServer>
         </com:Extension>
       </Extensions>
     </Application>
