@@ -84,28 +84,30 @@ $buildArgs = @(
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)." }
 
 # --- Collect outputs ---
+# Copy every DLL from the plugin build output. PassKee.dll depends on
+# PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's polyfill family
+# (System.Buffers, System.Numerics.Vectors, System.Runtime.CompilerServices.Unsafe);
+# missing any of them makes KeePass silently reject the plugin at load time.
 $srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\$Configuration\net48"
-$filesToCopy = @(
-    "PassKee.dll",
-    "Newtonsoft.Json.dll"
-)
+$dlls   = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File)
+if ($dlls.Count -eq 0) {
+    throw "No DLLs found in build output: $srcDir"
+}
 
-foreach ($f in $filesToCopy) {
-    $src = Join-Path $srcDir $f
-    if (-not (Test-Path $src)) {
-        Write-Warning "File not found in build output, skipping: $src"
-        continue
-    }
-    $dst = Join-Path $PluginDir $f
+if (-not $DryRun -and -not (Test-Path $PluginDir)) {
+    Write-Host "[build-plugin] Creating plugin directory: $PluginDir"
+    New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
+}
+
+foreach ($dll in $dlls) {
+    $dst = Join-Path $PluginDir $dll.Name
     if ($DryRun) {
-        Write-Host "[DryRun] Would copy: $src -> $dst"
+        Write-Host "[DryRun] Would copy: $($dll.FullName) -> $dst"
     } else {
-        if (-not (Test-Path $PluginDir)) {
-            Write-Host "[build-plugin] Creating plugin directory: $PluginDir"
-            New-Item -ItemType Directory -Path $PluginDir -Force | Out-Null
-        }
-        Write-Host "[build-plugin] Copying $f -> $PluginDir"
-        Copy-Item $src $dst -Force
+        Write-Host "[build-plugin] Copying $($dll.Name) -> $PluginDir"
+        Copy-Item $dll.FullName $dst -Force
+        # Strip any Mark-of-the-Web a WSL2 <-> Windows copy may have attached.
+        Unblock-File -Path $dst -ErrorAction SilentlyContinue
     }
 }
 

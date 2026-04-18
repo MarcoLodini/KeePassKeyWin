@@ -306,20 +306,28 @@ if (-not (Test-Path $pluginDir)) {
 }
 
 $srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\Release\net48"
-$filesToCopy = @("PassKee.dll", "Newtonsoft.Json.dll")
-foreach ($f in $filesToCopy) {
-    $src = Join-Path $srcDir $f
-    $dst = Join-Path $pluginDir $f
-    if (-not (Test-Path $src)) {
-        Fail "Build output not found: $src"
-    }
-    Write-Host "[validator] Copying $f -> $pluginDir"
-    Copy-Item $src $dst -Force
+# Copy every DLL from the plugin build output. PassKee.dll depends on
+# PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's transitive
+# polyfill family (System.Buffers, System.Numerics.Vectors,
+# System.Runtime.CompilerServices.Unsafe); missing any of them makes KeePass
+# silently reject the plugin at load time. Wildcard-copy covers future deps.
+$dlls = @(Get-ChildItem -Path $srcDir -Filter "*.dll" -File)
+if ($dlls.Count -eq 0) {
+    Fail "No DLLs found in build output: $srcDir"
+}
+foreach ($dll in $dlls) {
+    $dst = Join-Path $pluginDir $dll.Name
+    Write-Host "[validator] Copying $($dll.Name) -> $pluginDir"
+    Copy-Item $dll.FullName $dst -Force
     if (-not (Test-Path $dst)) {
         Fail "File was not copied to plugin dir: $dst"
     }
+    # Strip any Mark-of-the-Web (Zone.Identifier ADS) the DLL may have picked
+    # up while travelling across the WSL2 <-> Windows filesystem boundary.
+    # Without this, KeePass can refuse to load an "untrusted" plugin.
+    Unblock-File -Path $dst -ErrorAction SilentlyContinue
 }
-Write-Host "[validator] Plugin files installed: OK"
+Write-Host "[validator] Plugin files installed: OK ($($dlls.Count) DLL(s))"
 
 # ---------------------------------------------------------------------------
 # Step 5 — Create throwaway .kdbx in TEMP
