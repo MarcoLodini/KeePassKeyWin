@@ -95,9 +95,9 @@ Live browser E2E PASSED on Marco's Win11 25H2 box. Registration at webauthn.io v
 - [ ] Switch `passkee-provider.exe` to `#![windows_subsystem = "windows"]` so the console stops flashing during COM activation. Kept as console for now because the `[activate]` / `[dispatch]` `eprintln!` breadcrumbs are load-bearing for live debugging.
 - [ ] Demote `eprintln!` breadcrumbs to `tracing::debug` once stable.
 
-## Phase 4 — End-to-end `GetAssertion`
+## Phase 4 — End-to-end `GetAssertion` ✅ GREEN 2026-04-19
 
-Code-complete on Linux CI 2026-04-19; browser E2E is Marco's Windows-side gate.
+Live browser E2E PASSED on Marco's Win11 25H2 box. Login at webauthn.io via PassKee succeeds end-to-end — passkey picker shows the PassKee credential, Windows Hello UV fires, assertion signs, server-side verification accepts the login.
 
 - [x] `WebAuthNPluginAuthenticatorAddCredentials` FFI — dynamic-load binding + `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` struct (64B, x64 layout asserted) in `src/PassKee.Provider/src/com/webauthnplugin_ext.rs`; called from `dispatch_operation`'s MakeCredential success arm; best-effort (logs and continues on failure so webauthn.io registration isn't held hostage to picker visibility)
 - [x] `passkee.makeCredentialRaw` response extended with 6 fields (`credentialIdB64Url`, `rpId`, `rpName`, `userHandleB64Url`, `userName`, `userDisplayName`) — Rust sidecar decodes and populates `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS`
@@ -107,8 +107,9 @@ Code-complete on Linux CI 2026-04-19; browser E2E is Marco's Windows-side gate.
 - [x] HRESULT mapping: `ClientError::NoCredentials` → `NTE_NOT_FOUND (0x80090011)` (empty allowList / no allowList match)
 - [x] `AuthDataBuilder.BuildAssertion(rpId, userVerified, signCount)` — extended from Phase 3's hardcoded-zero signCount; 37-byte assertion authData with explicit UV propagation
 - [x] Linux CI green: `cargo test --all-targets` 54 passing; `dotnet test` 220 passing (up from 183); `cargo xwin build --target x86_64-pc-windows-msvc --release` clean
-- [ ] **webauthn.io from Edge: login succeeds, signature verifies server-side** — Marco's Windows E2E gate
-- [ ] Settings page reflects credential adds/removes (verifying OS-side state after AddCredentials)
+- [x] webauthn.io from Edge: login succeeds, signature verifies server-side — ✅ 2026-04-19 on Win11 build 26200.8037
+- [x] Windows Settings picker + webauthn.io picker both list the PassKee credential after MakeCredential (AddCredentials OS-side state confirmed)
+- [x] Pipe-busy fix (`ea5cbd1`): `cf_create_instance` shares one `PasskeeAuthenticatorState` Arc process-wide — webauthn.dll's per-operation `CoCreateInstance` no longer causes `ERROR_PIPE_BUSY` when Object 1 (MakeCredential) still holds the pipe while Object 2 (GetAssertion) activates
 
 **MVP-scope punts (explicit, documented for Phase 4.1 follow-up):**
 - Discoverable-credential / usernameless flow (empty allowList) returns `NoCredentials`/`NTE_NOT_FOUND`. webauthn.io's default login sends a non-empty allowCredentials, so this doesn't block the E2E gate — only the "usernameless" toggle.
