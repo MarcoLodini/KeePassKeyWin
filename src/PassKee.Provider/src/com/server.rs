@@ -329,16 +329,9 @@ pub(crate) mod imp {
         method: &str,
     ) -> HRESULT {
         use base64::Engine;
-        use std::io::Write;
-
-        // Local convenience: stderr-flushed trace line. Because the console
-        // stays open for the COM-activated EXE lifetime, these are visible
-        // live during a browser flow — the cheapest path to observability
-        // pre-Phase-3-E2E. Remove or demote to `tracing` once stable.
-        macro_rules! dbg_step { ($($arg:tt)*) => {{
-            eprintln!("[dispatch] {}", format_args!($($arg)*));
-            let _ = std::io::stderr().flush();
-        }} }
+        macro_rules! dbg_step { ($($arg:tt)*) => {
+            tracing::debug!("[dispatch] {}", format_args!($($arg)*))
+        } }
 
         let obj = unsafe { &*this };
         let req = unsafe { &*request };
@@ -470,12 +463,9 @@ pub(crate) mod imp {
     /// succeeds. Only the follow-on login via the Windows picker is
     /// affected by a failure here.
     fn try_add_credentials(method: &str, v: &serde_json::Value) {
-        use std::io::Write;
-
-        macro_rules! breadcrumb { ($($arg:tt)*) => {{
-            eprintln!("[addcreds] {}", format_args!($($arg)*));
-            let _ = std::io::stderr().flush();
-        }} }
+        macro_rules! breadcrumb { ($($arg:tt)*) => {
+            tracing::debug!("[addcreds] {}", format_args!($($arg)*))
+        } }
 
         if method != "passkee.makeCredentialRaw" {
             breadcrumb!("skip: not makeCredential (method={method})");

@@ -7,6 +7,11 @@
 //!   smoke             -- Connect, handshake, print hello response.
 //!   make-credential   -- Full makeCredential flow via the plugin pipe.
 
+// Suppress the console window for OS-activated COM paths (e.g. -PluginActivated).
+// CLI subcommands launched from a terminal still inherit the parent console, so
+// eprintln!/println! output remains visible when running register/smoke/etc.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use passkee_provider::ipc::PipeClient;
 use passkee_provider::ctap::{
     self as ctap,

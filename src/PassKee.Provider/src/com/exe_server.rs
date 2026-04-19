@@ -140,11 +140,9 @@ pub(crate) mod imp {
     unsafe extern "system" fn cf_create_instance(
         this: *mut ClassFactory, _outer: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void,
     ) -> HRESULT {
-        use std::io::Write;
-        macro_rules! dbg_step { ($($arg:tt)*) => {{
-            eprintln!("[activate] {}", format_args!($($arg)*));
-            let _ = std::io::stderr().flush();
-        }} }
+        macro_rules! dbg_step { ($($arg:tt)*) => {
+            tracing::debug!("[activate] {}", format_args!($($arg)*))
+        } }
 
         let session_id = unsafe { (*this).session_id };
         dbg_step!("cf_create_instance session_id={session_id}");
@@ -605,25 +603,18 @@ pub fn cmd_register() -> Result<(), String> {
         ppwsz_supported_rp_ids:    std::ptr::null(),
     };
 
-    // ── Diagnostic dump ──────────────────────────────────────────────────
-    // Prints the full state we're about to pass to webauthn.dll. Useful if
-    // the struct is ever wrong again — previous iterations hit crashes
-    // only visible via this trace. Keep until Phase 2.2 validation
-    // succeeds end-to-end.
+    // Dump the full state we're about to pass to webauthn.dll (RUST_LOG=debug to see).
     let resolved_symbol = webauthn_ext::resolved_add_symbol_name().unwrap_or("<bindings not loaded>");
-    eprintln!("[register] ==== diagnostic dump ====");
-    eprintln!("[register] Resolved symbol: {resolved_symbol}");
-    eprintln!("[register] Struct size:     {} bytes (expected 72)", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
-    eprintln!("[register] name_w   (LPCWSTR):  {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
-    eprintln!("[register] rclsid   (REFCLSID): {:p} -> {{d26bcf6f-b54c-43ff-9f06-d5bf148625f7}}", &CLSID_GUID as *const _);
-    eprintln!("[register] rp_id_w  (LPCWSTR):  {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
-    eprintln!("[register] logo_w   (LPCWSTR):  {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
-    eprintln!("[register] info     (PBYTE):    {:p} cbAuthenticatorInfo={}B", info.as_ptr(), info.len());
-    eprintln!("[register] cSupportedRpIds=0 ppwszSupportedRpIds=NULL");
-    eprintln!("[register] ==== calling ... ====");
-    // Flush now — if we crash the buffered stderr may be lost.
-    use std::io::Write;
-    let _ = std::io::stderr().flush();
+    tracing::debug!("[register] ==== diagnostic dump ====");
+    tracing::debug!("[register] Resolved symbol: {resolved_symbol}");
+    tracing::debug!("[register] Struct size:     {} bytes (expected 72)", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
+    tracing::debug!("[register] name_w   (LPCWSTR):  {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
+    tracing::debug!("[register] rclsid   (REFCLSID): {:p} -> {{d26bcf6f-b54c-43ff-9f06-d5bf148625f7}}", &CLSID_GUID as *const _);
+    tracing::debug!("[register] rp_id_w  (LPCWSTR):  {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
+    tracing::debug!("[register] logo_w   (LPCWSTR):  {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
+    tracing::debug!("[register] info     (PBYTE):    {:p} cbAuthenticatorInfo={}B", info.as_ptr(), info.len());
+    tracing::debug!("[register] cSupportedRpIds=0 ppwszSupportedRpIds=NULL");
+    tracing::debug!("[register] ==== calling ... ====");
 
     // HRESULT the EXPERIMENTAL_ API returns when our CLSID is already
     // registered. Documented "re-register updates existing" semantics are
@@ -641,7 +632,7 @@ pub fn cmd_register() -> Result<(), String> {
     webauthn_ext::free_add_authenticator_response(response_ptr);
 
     if hr.0 as u32 == HR_NTE_EXISTS {
-        eprintln!(
+        tracing::info!(
             "[register] NTE_EXISTS (0x8009000f) — stale registration present; removing and retrying Add."
         );
 
@@ -660,7 +651,7 @@ pub fn cmd_register() -> Result<(), String> {
                 hr_retry.0 as u32,
             ));
         }
-        eprintln!("[register] remove+retry succeeded.");
+        tracing::info!("[register] remove+retry succeeded.");
     } else if hr.is_err() {
         return Err(format!(
             "WebAuthNPluginAddAuthenticator failed: 0x{:08x}",
@@ -703,7 +694,7 @@ pub fn cmd_unregister() -> Result<(), String> {
             Ok(())
         }
         HR_NOT_FOUND | HR_FILE_NOT_FOUND => {
-            eprintln!("[unregister] not currently registered (0x{:08x}) — treating as success.", hr.0 as u32);
+            tracing::info!("[unregister] not currently registered (0x{:08x}) — treating as success.", hr.0 as u32);
             Ok(())
         }
         code => Err(format!(
