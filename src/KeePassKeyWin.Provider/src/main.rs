@@ -23,7 +23,7 @@ use std::process;
 use tracing_subscriber::fmt;
 
 /// Expected package family name for the sidecar — must match the C# constant.
-const PKG_FAMILY: &str = "KeePassKeyWin.Provider_rh4edrm0by30m";
+const PKG_FAMILY: &str = "KeePassKeyWin.Provider_4fv17arhjxxvg";
 
 // ── Subcommand enum (factored out for unit-testability) ───────────────────────
 

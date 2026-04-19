@@ -255,7 +255,7 @@ pub(crate) mod imp {
     /// — the plugin rejects handshakes from any other PFN. If the package
     /// publisher identity ever changes this constant and the C# constant
     /// MUST be updated in lockstep.
-    pub(crate) const KEEPASSKEYWIN_PKG_FAMILY: &str = "KeePassKeyWin.Provider_rh4edrm0by30m";
+    pub(crate) const KEEPASSKEYWIN_PKG_FAMILY: &str = "KeePassKeyWin.Provider_4fv17arhjxxvg";
 
     /// Read the current handshake nonce from
     /// `HKCU\Software\KeePassKeyWin\HandshakeNonce`. The plugin writes it on

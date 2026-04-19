@@ -18,7 +18,7 @@ namespace KeePassKeyWin.Core.Ipc
     {
         // Expected package family name for the KeePassKeyWin.Provider MSIX.
         // Verified at runtime; hardcoded here because v1 only ships one provider package.
-        public const string ExpectedPkgFamily = "KeePassKeyWin.Provider_rh4edrm0by30m";
+        public const string ExpectedPkgFamily = "KeePassKeyWin.Provider_4fv17arhjxxvg";
 
         public static JToken Handle(JToken? @params, ConnectionContext context, INonceStore nonceStore)
         {

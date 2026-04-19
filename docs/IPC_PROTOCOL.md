@@ -59,14 +59,14 @@ The **first** request on every connection must be `keepasskeywin.hello`. All oth
   "id": 1,
   "method": "keepasskeywin.hello",
   "params": {
-    "clientPkgFamilyName": "KeePassKeyWin.Provider_rh4edrm0by30m",
+    "clientPkgFamilyName": "KeePassKeyWin.Provider_4fv17arhjxxvg",
     "handshakeNonce": "<64-char hex nonce>"
   }
 }
 ```
 
 **Validation**:
-1. `clientPkgFamilyName` must equal `KeePassKeyWin.Provider_rh4edrm0by30m` exactly.
+1. `clientPkgFamilyName` must equal `KeePassKeyWin.Provider_4fv17arhjxxvg` exactly.
 2. `handshakeNonce` must match the value stored at `HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce` (REG_SZ).
 3. The nonce is deleted from the registry on first successful use (single-use).
 

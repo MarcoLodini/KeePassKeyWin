@@ -356,7 +356,7 @@ mod tests {
 
         let mut client = PipeClient::connect(session_id).await.unwrap();
         client
-            .handshake("KeePassKeyWin.Provider_rh4edrm0by30m", "deadbeef")
+            .handshake("KeePassKeyWin.Provider_4fv17arhjxxvg", "deadbeef")
             .await
             .unwrap();
 
