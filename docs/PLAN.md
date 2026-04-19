@@ -54,7 +54,7 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [x] `src/com/types.rs` — `#[repr(C)]` ABI-compatible types: `WebauthNPluginOperationRequest/Response`, `WebauthNPluginCancelOperationRequest`, `PluginLockStatus`, `Guid`
 - [x] `src/com/server.rs` — hand-rolled `IPluginAuthenticatorVtbl` vtable; `IPluginAuthenticatorImpl` with atomic ref-count + `Arc<Mutex<State>>`; `make_credential`, `get_assertion`, `cancel_operation`, `get_lock_status` dispatch
 - [x] `src/com/dll.rs` — `ClassFactory` + `DllGetClassObject`, `DllCanUnloadNow`, `DllRegisterServer`, `DllUnregisterServer` exports
-- [x] `appx/Package.appxmanifest` — `MinVersion="10.0.26100.0"`, `rescap:runFullTrust`, `com:InProcessServer` with CLSID `d26bcf6f-…`, STA threading model
+- [x] `appx/Package.appxmanifest` — `MinVersion="10.0.26100.0"`, `rescap:runFullTrust`, `com:InProcessServer` with CLSID `5c6840dc-…`, STA threading model
 - [x] `.cargo/config.toml` — `lld-link` linker + xwin SDK paths for `x86_64-pc-windows-msvc` cross-compilation
 - [x] `idl/pluginauthenticator.h` — reference header transcribed from Microsoft WebAuthn SDK
 

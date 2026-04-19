@@ -6,7 +6,10 @@
 //! The EXE then calls `run_com_server()` which registers the ClassFactory on
 //! an STA and pumps messages until the last object is released.
 //!
-//! CLSID_KeePassKeyWin = IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+//! CLSID_KeePassKeyWin = {5c6840dc-8bed-4951-9576-b0457fc34e71}
+//! (Distinct from IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7},
+//! which is Microsoft's well-known interface ID — we implement that interface,
+//! but our COM class has its own CLSID.)
 //!
 //! Lifecycle integration:
 //!   - `cf_create_instance` calls `CoAddRefServerProcess()` when handing out an
@@ -48,8 +51,9 @@ pub(crate) mod imp {
     const IID_ICLASS_FACTORY: GUID = GUID::from_u128(0x00000001_0000_0000_C000_000000000046);
     // IID_IUnknown = {00000000-0000-0000-C000-000000000046}
     const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_C000_000000000046);
-    // CLSID_KeePassKeyWin = IID_IPluginAuthenticator = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
-    pub(crate) const CLSID_KEEPASSKEYWIN: GUID = GUID::from_u128(0xd26bcf6f_b54c_43ff_9f06_d5bf148625f7);
+    // CLSID_KeePassKeyWin = {5c6840dc-8bed-4951-9576-b0457fc34e71}
+    // (Distinct from IID_IPluginAuthenticator — see module-level doc.)
+    pub(crate) const CLSID_KEEPASSKEYWIN: GUID = GUID::from_u128(0x5c6840dc_8bed_4951_9576_b0457fc34e71);
 
     /// Shared Tokio runtime. Populated by `run_com_server` before the class
     /// factory is registered; consumed by `cf_create_instance` and
@@ -714,10 +718,10 @@ where
 /// pointer-not-inline convention.
 #[cfg(windows)]
 pub(crate) static CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
-    data1: 0xd26b_cf6f,
-    data2: 0xb54c,
-    data3: 0x43ff,
-    data4: [0x9f, 0x06, 0xd5, 0xbf, 0x14, 0x86, 0x25, 0xf7],
+    data1: 0x5c68_40dc,
+    data2: 0x8bed,
+    data3: 0x4951,
+    data4: [0x95, 0x76, 0xb0, 0x45, 0x7f, 0xc3, 0x4e, 0x71],
 };
 
 /// Human-visible name shown in Settings → Accounts → Passkeys → Advanced.
@@ -828,7 +832,7 @@ pub fn cmd_register() -> Result<(), String> {
     tracing::debug!("[register] Resolved symbol: {resolved_symbol}");
     tracing::debug!("[register] Struct size:     {} bytes (expected 72)", std::mem::size_of::<WebauthnPluginAddAuthenticatorOptions>());
     tracing::debug!("[register] name_w   (LPCWSTR):  {:p} wchars={} \"{AUTHENTICATOR_DISPLAY_NAME}\"", name_w.as_ptr(), name_w.len());
-    tracing::debug!("[register] rclsid   (REFCLSID): {:p} -> {{d26bcf6f-b54c-43ff-9f06-d5bf148625f7}}", &CLSID_GUID as *const _);
+    tracing::debug!("[register] rclsid   (REFCLSID): {:p} -> {{5c6840dc-8bed-4951-9576-b0457fc34e71}}", &CLSID_GUID as *const _);
     tracing::debug!("[register] rp_id_w  (LPCWSTR):  {:p} wchars={} \"{PLUGIN_RP_ID}\"",               rp_id_w.as_ptr(), rp_id_w.len());
     tracing::debug!("[register] logo_w   (LPCWSTR):  {:p} wchars={} (shared light+dark, {}B base64 SVG)", logo_w.as_ptr(), logo_w.len(), THEME_LOGO_SVG_B64.len());
     tracing::debug!("[register] info     (PBYTE):    {:p} cbAuthenticatorInfo={}B", info.as_ptr(), info.len());

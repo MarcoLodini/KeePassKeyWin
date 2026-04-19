@@ -130,7 +130,7 @@ try {
     Write-Host ''
     Write-Host '[validate-phase22] --- Step 3/5: CoCreateInstance smoke test ---'
 
-    $clsid = [Guid]'d26bcf6f-b54c-43ff-9f06-d5bf148625f7'
+    $clsid = [Guid]'5c6840dc-8bed-4951-9576-b0457fc34e71'
     Write-Host "[validate-phase22] CLSID: {$clsid}"
 
     if ($DryRun) {

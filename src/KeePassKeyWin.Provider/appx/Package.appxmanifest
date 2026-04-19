@@ -7,9 +7,8 @@
     KEEPASSKEYWIN_VERSION_PLACEHOLDER    — package version, e.g. 0.0.1.0  (must be Major.Minor.Build.Revision)
 
   CLSIDs:
-    IPluginAuthenticator IID/CLSID: {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
-    This is the Microsoft-defined interface IID; it doubles as our COM server CLSID per the
-    Windows passkey plugin contract.
+    IPluginAuthenticator interface IID: {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}  (Microsoft-defined; we implement it)
+    KeePassKeyWin COM server CLSID:     {5c6840dc-8bed-4951-9576-b0457fc34e71}  (our own class identifier)
 
   Threading model: STA (singleThreadedApartment), required by IPluginAuthenticator.
 
@@ -79,7 +78,7 @@
         <!--
           COM out-of-process server registration.
 
-          CLSID = IPluginAuthenticator IID = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+          CLSID = {5c6840dc-8bed-4951-9576-b0457fc34e71}  (our COM server identifier)
           The Windows WebAuthn host resolves the provider by this CLSID via
           CLSCTX_LOCAL_SERVER (out-of-process), not CLSCTX_INPROC_SERVER.
 
@@ -118,7 +117,7 @@
                    server process declares its apartment via CoInitializeEx at
                    startup (we use COINIT_APARTMENTTHREADED in run_com_server). -->
               <com:Class
-                Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
+                Id="5c6840dc-8bed-4951-9576-b0457fc34e71"
                 DisplayName="KeePassKeyWin Passkey Provider" />
             </com:ExeServer>
           </com:ComServer>
