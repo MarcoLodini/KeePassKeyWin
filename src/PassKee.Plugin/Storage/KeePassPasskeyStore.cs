@@ -75,6 +75,12 @@ namespace PassKee.Plugin.Storage
                 $"{record.RpName} / {record.UserDisplayName}"));
 
             group.AddEntry(entry, bTakeOwnership: true);
+            _host.Database!.Save(null);
+
+            var mw = _host.MainWindow;
+            if (mw?.IsHandleCreated == true)
+                mw.BeginInvoke(new Action(() =>
+                    mw.UpdateUI(false, null, true, null, true, null, false)));
         }
 
         public IReadOnlyList<PasskeyRecord> FindByRpId(string rpId)
@@ -120,6 +126,13 @@ namespace PassKee.Plugin.Storage
                 if (string.Equals(id, credentialId, StringComparison.Ordinal))
                 {
                     group.Entries.Remove(entry);
+                    _host.Database!.Save(null);
+
+                    var mw = _host.MainWindow;
+                    if (mw?.IsHandleCreated == true)
+                        mw.BeginInvoke(new Action(() =>
+                            mw.UpdateUI(false, null, true, null, true, null, false)));
+
                     return true;
                 }
             }
@@ -169,6 +182,11 @@ namespace PassKee.Plugin.Storage
                 // old counter on next login, which RPs flag as cloned authenticator
                 // (WebAuthn L3 §6.1.1). Non-negotiable; see docs/ARCHITECTURE.md.
                 _host.Database!.Save(null);
+
+                var mw = _host.MainWindow;
+                if (mw?.IsHandleCreated == true)
+                    mw.BeginInvoke(new Action(() =>
+                        mw.UpdateUI(false, null, true, null, true, null, false)));
 
                 return next;
             }

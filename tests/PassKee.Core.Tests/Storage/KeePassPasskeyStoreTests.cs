@@ -308,12 +308,12 @@ namespace PassKee.Core.Tests.Storage
             var store = new KeePassPasskeyStore(host);
             store.Add(MakeRecord("cred-inc"));
 
-            // Replay landmine canary: Save MUST be called synchronously so the
-            // new counter survives a KeePass close-without-save.
-            Assert.Equal(0, host.Database!.SaveCallCount);
+            // Add() saves once; IncrementSignCount must save again synchronously so
+            // the new counter survives a KeePass close-without-save (WebAuthn L3 §6.1.1).
+            Assert.Equal(1, host.Database!.SaveCallCount);  // 1 = from Add
             uint next = store.IncrementSignCount("cred-inc");
             Assert.Equal(1u, next);
-            Assert.Equal(1, host.Database!.SaveCallCount);
+            Assert.Equal(2, host.Database!.SaveCallCount);  // 2 = Add + IncrementSignCount
 
             var found = store.FindById("cred-inc")!;
             Assert.Equal(1u, found.SignCount);
@@ -329,7 +329,7 @@ namespace PassKee.Core.Tests.Storage
             Assert.Equal(1u, store.IncrementSignCount("cred-inc"));
             Assert.Equal(2u, store.IncrementSignCount("cred-inc"));
             Assert.Equal(3u, store.IncrementSignCount("cred-inc"));
-            Assert.Equal(3, host.Database!.SaveCallCount);
+            Assert.Equal(4, host.Database!.SaveCallCount);  // 1 (Add) + 3 (increments)
         }
 
         [Fact]

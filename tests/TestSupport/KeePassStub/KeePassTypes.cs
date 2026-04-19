@@ -156,5 +156,15 @@ namespace KeePass
     public partial class MainForm
     {
         public void SetStatusEx(string str) { }
+
+#if !NET48
+        // net8.0 / CI: no WinForms — IsHandleCreated = false so the store skips BeginInvoke.
+        public bool IsHandleCreated => false;
+        public System.IAsyncResult BeginInvoke(Delegate method) => default!;
+        public void UpdateUI(bool bSetModified, object? pgSelect,
+            bool bUpdateGroupList, object? pgList,
+            bool bUpdateEntryList, object? peList,
+            bool bSetModifiedList) { }
+#endif
     }
 }
