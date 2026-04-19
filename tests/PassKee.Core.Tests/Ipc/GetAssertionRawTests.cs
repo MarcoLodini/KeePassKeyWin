@@ -176,8 +176,9 @@ namespace PassKee.Core.Tests.Ipc
         }
 
         [Fact]
-        public void EmptyAllowList_ThrowsNoCredentials()
+        public void EmptyAllowList_NoCredentialForRp_ThrowsCredentialNotFound()
         {
+            // Empty allowList = discoverable flow; no credential seeded → CredentialNotFound.
             var handler = MakeHandler(out _);
             var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>());
 
@@ -186,10 +187,14 @@ namespace PassKee.Core.Tests.Ipc
         }
 
         [Fact]
-        public void AllowListOnlyUnsupportedTypes_ThrowsNoCredentials()
+        public void AllowListOnlyUnsupportedTypes_ThrowsCredentialNotFound()
         {
-            // Descriptor with type != "public-key" is silently dropped; we end up
-            // with a functionally empty allowList → NoCredentials.
+            // Descriptor with type != "public-key" is silently dropped. The resulting
+            // empty credential list triggers the discoverable flow (CTAP 2.1 §6.2).
+            // No credential seeded → CredentialNotFound.
+            // Note: if a credential were seeded for "example.com", the unsupported
+            // descriptor would be silently bypassed and the discoverable flow would
+            // succeed — by design, filtering unknown types falls back to discoverable.
             var handler = MakeHandler(out _);
             var badDescriptor = MapOf(
                 (T("id"),   B(new byte[] { 0x01 })),
@@ -244,13 +249,14 @@ namespace PassKee.Core.Tests.Ipc
         }
 
         [Fact]
-        public void MissingAllowList_ThrowsInvalidParams()
+        public void AbsentAllowList_NoCredentialForRp_ThrowsCredentialNotFound()
         {
+            // Absent key 3 = discoverable flow (CTAP 2.1 §6.2); no credential seeded → CredentialNotFound.
             var handler = MakeHandler(out _);
             var req = BuildGetAssertionCbor("example.com", includeAllowList: false);
 
             var ex = Assert.Throws<RpcException>(() => CallGetAssertionRaw(handler, req));
-            Assert.Equal(RpcErrorCode.InvalidParams, ex.Code);
+            Assert.Equal(RpcErrorCode.CredentialNotFound, ex.Code);
         }
 
         [Fact]
@@ -309,6 +315,134 @@ namespace PassKee.Core.Tests.Ipc
                     ["uv"]   = false,
                 }));
             Assert.NotEqual(RpcErrorCode.MethodNotFound, ex.Code);
+        }
+
+        // ── Discoverable credential flow ─────────────────────────────────────
+
+        [Fact]
+        public void Discoverable_EmptyAllowList_OneCredential_Succeeds()
+        {
+            // Empty allowList + credential present → assertion succeeds.
+            var handler = MakeHandler(out var store);
+            SeedCredential(store, "example.com");
+
+            var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>(), optUv: true);
+            var result = CallGetAssertionRaw(handler, req, uv: true);
+
+            Assert.NotNull(result["cbor"]?.Value<string>());
+        }
+
+        [Fact]
+        public void Discoverable_EmptyAllowList_NoMatch_ThrowsCredentialNotFound()
+        {
+            // Empty allowList + no credential for rpId → CredentialNotFound.
+            var handler = MakeHandler(out var store);
+            SeedCredential(store, "other.com"); // wrong RP
+
+            var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>());
+            var ex = Assert.Throws<RpcException>(() => CallGetAssertionRaw(handler, req));
+            Assert.Equal(RpcErrorCode.CredentialNotFound, ex.Code);
+        }
+
+        [Fact]
+        public void Discoverable_AbsentKey3_TreatedAsDiscoverable_Succeeds()
+        {
+            // Absent key 3 (includeAllowList: false) = discoverable flow.
+            var handler = MakeHandler(out var store);
+            SeedCredential(store, "example.com");
+
+            var req = BuildGetAssertionCbor("example.com", includeAllowList: false, optUv: true);
+            var result = CallGetAssertionRaw(handler, req, uv: true);
+
+            Assert.NotNull(result["cbor"]?.Value<string>());
+        }
+
+        [Fact]
+        public void Discoverable_UserEntityKey4_PresentInResponseCbor_WithUv()
+        {
+            // When discoverable + uv=true, response must contain CTAP2 key 4 (user entity)
+            // with id, name, and displayName.
+            var handler = MakeHandler(out var store);
+            SeedCredential(store, "example.com");
+
+            var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>(), optUv: true);
+            var result = CallGetAssertionRaw(handler, req, uv: true);
+
+            var responseBytes = Convert.FromBase64String(result["cbor"]!.Value<string>()!);
+            var (credId, authData, signature, userEntity) = DecodeAssertionResponseFull(responseBytes);
+
+            Assert.NotNull(userEntity);
+            Assert.NotNull(userEntity!.Id);
+            Assert.Equal(new byte[] { 0x01, 0x02, 0x03 }, userEntity.Id); // matches SeedCredential's UserHandle
+            Assert.Equal("alice",  userEntity.Name);
+            Assert.Equal("Alice",  userEntity.DisplayName);
+        }
+
+        [Fact]
+        public void Discoverable_UserEntityKey4_IdOnly_WhenUvFalse()
+        {
+            // CTAP 2.1 §6.2 PII rule: without uv, user.name and user.displayName must not
+            // be included. Only user.id is mandatory.
+            var handler = MakeHandler(out var store);
+            SeedCredential(store, "example.com");
+
+            var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>());
+            var result = CallGetAssertionRaw(handler, req, uv: false);
+
+            var responseBytes = Convert.FromBase64String(result["cbor"]!.Value<string>()!);
+            var (_, _, _, userEntity) = DecodeAssertionResponseFull(responseBytes);
+
+            Assert.NotNull(userEntity);
+            Assert.NotNull(userEntity!.Id);
+            Assert.Equal(new byte[] { 0x01, 0x02, 0x03 }, userEntity.Id);
+            Assert.Null(userEntity.Name);         // PII suppressed without UV
+            Assert.Null(userEntity.DisplayName);   // PII suppressed without UV
+        }
+
+        [Fact]
+        public void Discoverable_UserEntityKey4_HexShape_IntKeyFour()
+        {
+            // Hex-shape canary: verify BuildAssertionResponse emits CTAP2 key 4 when
+            // userRecord is non-null, uv=true. Uses fixed inputs so byte offsets are
+            // predictable. ECDSA is non-deterministic so we call the static encoder directly.
+            byte[] credId    = new byte[] { 0xA0, 0xA1 };
+            byte[] authData  = new byte[] { 0xB0 };
+            byte[] signature = new byte[] { 0xC0 };
+
+            var userHandle   = new byte[] { 0xD0, 0xD1 };
+            var userRecord   = new PasskeyRecord
+            {
+                UserHandle      = Base64Url.Encode(userHandle),
+                UserName        = "bob",
+                UserDisplayName = "Bob",
+            };
+
+            var bytes = VaultHandler.BuildAssertionResponse(credId, authData, signature, userRecord, uv: true);
+
+            // Top-level map must have 4 pairs: 0xA4.
+            Assert.Equal(0xA4, bytes[0]);
+
+            // Parse the response and verify key 4 is present.
+            var (_, _, _, userEntity) = DecodeAssertionResponseFull(bytes);
+            Assert.NotNull(userEntity);
+            Assert.Equal(userHandle, userEntity!.Id);
+            Assert.Equal("bob", userEntity.Name);
+            Assert.Equal("Bob", userEntity.DisplayName);
+        }
+
+        [Fact]
+        public void Discoverable_SignCount_IncrementedEvenInDiscoverableFlow()
+        {
+            // IncrementSignCount must be called for discoverable credentials just as
+            // for allowList-driven assertions.
+            var handler = MakeHandler(out var store);
+            var (_, record) = SeedCredential(store, "example.com");
+            Assert.Equal(0u, record.SignCount);
+
+            var req = BuildGetAssertionCbor("example.com", allowListCredIds: Array.Empty<byte[]>(), optUv: true);
+            CallGetAssertionRaw(handler, req, uv: true);
+
+            Assert.Equal(1u, store.FindById(record.CredentialId)!.SignCount);
         }
 
         // ── SignCount increment + return shape ───────────────────────────────
@@ -583,20 +717,41 @@ namespace PassKee.Core.Tests.Ipc
 
         // ── Helpers ──────────────────────────────────────────────────────────
 
+        /// <summary>Parsed user entity from a CTAP2 GetAssertion response key 4.</summary>
+        private sealed class ParsedUserEntity
+        {
+            public byte[]?  Id          { get; set; }
+            public string?  Name        { get; set; }
+            public string?  DisplayName { get; set; }
+        }
+
         private static byte[] ExtractAuthDataFromResponse(JObject result)
         {
             var cborB64 = result["cbor"]!.Value<string>()!;
             var decoded = Convert.FromBase64String(cborB64);
-            var (_, authData, _) = DecodeAssertionResponse(decoded);
+            var (_, authData, _, _) = DecodeAssertionResponseFull(decoded);
             return authData;
         }
 
-        /// <summary>Decodes a CTAP2 GetAssertion response map into its three fields.</summary>
+        /// <summary>Decodes a CTAP2 GetAssertion response map into its three mandatory fields.</summary>
         private static (byte[] credId, byte[] authData, byte[] signature) DecodeAssertionResponse(byte[] bytes)
+        {
+            var (credId, authData, signature, _) = DecodeAssertionResponseFull(bytes);
+            return (credId, authData, signature);
+        }
+
+        /// <summary>
+        /// Decodes a CTAP2 GetAssertion response map into its three mandatory fields
+        /// plus the optional user entity (key 4), which is null if absent.
+        /// </summary>
+        private static (byte[] credId, byte[] authData, byte[] signature, ParsedUserEntity? userEntity)
+            DecodeAssertionResponseFull(byte[] bytes)
         {
             var reader = new CborReader(bytes);
             int count = reader.ReadMapHeader();
             byte[]? credId = null, authData = null, signature = null;
+            ParsedUserEntity? userEntity = null;
+
             for (int i = 0; i < count; i++)
             {
                 ulong key = reader.ReadUnsignedInt();
@@ -623,6 +778,25 @@ namespace PassKee.Core.Tests.Ipc
                     case 3:
                         signature = reader.ReadByteString();
                         break;
+                    case 4:
+                    {
+                        // User entity: text-keyed map with "id" (bstr), optional "name" and "displayName".
+                        userEntity = new ParsedUserEntity();
+                        int nested = reader.ReadMapHeader();
+                        for (int k = 0; k < nested; k++)
+                        {
+                            string field = reader.ReadTextString();
+                            if (field == "id")
+                                userEntity.Id = reader.ReadByteString();
+                            else if (field == "name")
+                                userEntity.Name = reader.ReadTextString();
+                            else if (field == "displayName")
+                                userEntity.DisplayName = reader.ReadTextString();
+                            else
+                                reader.SkipValue();
+                        }
+                        break;
+                    }
                     default:
                         reader.SkipValue();
                         break;
@@ -631,7 +805,7 @@ namespace PassKee.Core.Tests.Ipc
             Assert.NotNull(credId);
             Assert.NotNull(authData);
             Assert.NotNull(signature);
-            return (credId!, authData!, signature!);
+            return (credId!, authData!, signature!, userEntity);
         }
 
         /// <summary>

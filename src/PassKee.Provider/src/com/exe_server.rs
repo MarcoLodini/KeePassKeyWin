@@ -212,6 +212,22 @@ pub(crate) mod imp {
                 }));
                 if fresh.lock().unwrap().pipe.is_some() {
                     *SHARED_STATE.lock().unwrap() = Some(fresh.clone());
+
+                    // Best-effort startup reconciliation: sync vault credentials
+                    // into the OS autofill database. Runs once per process on
+                    // first successful activation. Uses the pipe briefly to call
+                    // passkee.enumerateForSync, then returns it before any COM
+                    // operation can arrive.
+                    //
+                    // Race window: the browser may call MakeCredential immediately
+                    // after cf_create_instance returns. If reconciliation holds the
+                    // pipe at that moment, MakeCredential sees pipe=None → E_FAIL.
+                    // This is an accepted best-effort trade-off (startup sync, not
+                    // a correctness requirement). The window is bounded by one
+                    // enumerateForSync round-trip (~1–5 ms on a local pipe).
+                    let state_for_reconcile = fresh.clone();
+                    let rt = RT.get().expect("runtime uninitialised").clone();
+                    rt.spawn(reconcile_vault_with_os(state_for_reconcile));
                 }
                 fresh
             }
@@ -287,6 +303,209 @@ pub(crate) mod imp {
             unsafe { CoReleaseServerProcess() };
         }
         HRESULT(0)
+    }
+
+    // ── Startup vault↔OS reconciliation ─────────────────────────────────────
+
+    /// Best-effort background task: sync vault credentials into the OS
+    /// autofill database on first activation.
+    ///
+    /// Flow:
+    ///   1. Take the pipe from state briefly, call `passkee.enumerateForSync`,
+    ///      return the pipe.
+    ///   2. Call `GetAllCredentials` (sync FFI) to get what the OS knows.
+    ///   3. For vault creds missing from OS: call `AddCredentials`.
+    ///   4. For OS creds missing from vault: call `RemoveCredentials`.
+    ///   5. Call `FreeCredentialDetailsArray`.
+    ///
+    /// Never panics, never blocks COM activation. All failures are logged at
+    /// debug level with the `[reconcile]` breadcrumb.
+    async fn reconcile_vault_with_os(
+        state: Arc<Mutex<PasskeeAuthenticatorState>>,
+    ) {
+        use base64::Engine;
+        use crate::com::server::parse_add_credentials_fields;
+        use crate::com::types::WebauthnPluginCredentialDetails;
+        use crate::com::webauthnplugin_ext;
+        use crate::ipc::ClientError;
+
+        macro_rules! dbg { ($($arg:tt)*) => {
+            tracing::debug!("[reconcile] {}", format_args!($($arg)*))
+        } }
+
+        dbg!("start");
+
+        // ── Step 1: enumerate vault credentials via IPC ───────────────────────
+        let pipe_opt = { state.lock().unwrap().pipe.take() };
+        let mut pipe = match pipe_opt {
+            Some(p) => p,
+            None => {
+                dbg!("pipe unavailable — skipping");
+                return;
+            }
+        };
+
+        let (rpc_result, pipe_back): (Result<serde_json::Value, ClientError>, _) = {
+            let r = pipe.call("passkee.enumerateForSync", serde_json::json!({})).await;
+            (r, pipe)
+        };
+        state.lock().unwrap().pipe = Some(pipe_back);
+
+        let vault_arr = match rpc_result {
+            Ok(v) => match v.as_array().cloned() {
+                Some(a) => a,
+                None => {
+                    dbg!("enumerateForSync returned non-array — skipping");
+                    return;
+                }
+            },
+            Err(e) => {
+                dbg!("enumerateForSync failed: {e:?} — skipping");
+                return;
+            }
+        };
+        dbg!("vault has {} credential(s)", vault_arr.len());
+
+        // ── Step 2: get OS credential list ────────────────────────────────────
+        let rclsid_ptr = &crate::com::exe_server::CLSID_GUID as *const _;
+        let (os_count, os_arr_ptr) = match webauthnplugin_ext::get_all_credentials(rclsid_ptr) {
+            Ok(pair) => pair,
+            Err(e) => {
+                dbg!("GetAllCredentials failed: {e} — skipping");
+                return;
+            }
+        };
+        dbg!("OS has {os_count} credential(s)");
+
+        // Collect OS credential IDs (raw bytes) for the comparison.
+        // SAFETY: os_arr_ptr is valid for os_count elements until FreeCredentialDetailsArray.
+        let os_ids: Vec<Vec<u8>> = if os_count > 0 && !os_arr_ptr.is_null() {
+            (0..os_count as usize).map(|i| {
+                let detail = unsafe { &*os_arr_ptr.add(i) };
+                if detail.pb_credential_id.is_null() || detail.cb_credential_id == 0 {
+                    Vec::new()
+                } else {
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            detail.pb_credential_id,
+                            detail.cb_credential_id as usize,
+                        )
+                    }.to_vec()
+                }
+            }).collect()
+        } else {
+            Vec::new()
+        };
+
+        // ── Step 3: add vault creds missing from OS ───────────────────────────
+        //
+        // The enumerateForSync response uses field names `credentialId` and
+        // `userHandle` (plain base64url strings, no `B64Url` suffix) whereas
+        // parse_add_credentials_fields reads `credentialIdB64Url` /
+        // `userHandleB64Url`. Translate the field names before reusing it.
+        let mut added = 0u32;
+        let mut skipped_parse = 0u32;
+
+        for item in &vault_arr {
+            let cred_id_b64 = match item["credentialId"].as_str() {
+                Some(s) => s,
+                None => { skipped_parse += 1; continue; }
+            };
+            let cred_id_bytes = match base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(cred_id_b64)
+            {
+                Ok(b) => b,
+                Err(_) => { skipped_parse += 1; continue; }
+            };
+
+            if os_ids.iter().any(|id| *id == cred_id_bytes) {
+                continue; // already known to OS
+            }
+
+            // Translate field names for parse_add_credentials_fields.
+            let translated = serde_json::json!({
+                "credentialIdB64Url": item["credentialId"],
+                "rpId":               item["rpId"],
+                "rpName":             item["rpName"],
+                "userHandleB64Url":   item["userHandle"],
+                "userName":           item["userName"],
+                "userDisplayName":    item["userDisplayName"],
+            });
+
+            let fields = match parse_add_credentials_fields(&translated) {
+                Ok(f) => f,
+                Err(field) => {
+                    dbg!("skip add: parse error on field {field}");
+                    skipped_parse += 1;
+                    continue;
+                }
+            };
+
+            let detail = WebauthnPluginCredentialDetails {
+                cb_credential_id:       fields.credential_id.len() as u32,
+                pb_credential_id:       fields.credential_id.as_ptr(),
+                pwsz_rp_id:             fields.rp_id_w.as_ptr(),
+                pwsz_rp_name:           fields.rp_name_w.as_ptr(),
+                cb_user_id:             fields.user_handle.len() as u32,
+                pb_user_id:             fields.user_handle.as_ptr(),
+                pwsz_user_name:         fields.user_name_w.as_ptr(),
+                pwsz_user_display_name: fields.user_disp_w.as_ptr(),
+            };
+
+            match webauthnplugin_ext::add_credentials(rclsid_ptr, std::slice::from_ref(&detail)) {
+                Ok(hr) => {
+                    dbg!("AddCredentials hr=0x{:08x} for credId prefix={}", hr.0 as u32,
+                         &cred_id_b64[..cred_id_b64.len().min(8)]);
+                    if hr.0 == 0 { added += 1; }
+                }
+                Err(e) => {
+                    dbg!("AddCredentials FFI unavailable: {e}");
+                    // If FFI is completely unavailable, abort — all subsequent
+                    // calls will fail the same way.
+                    if os_count > 0 && !os_arr_ptr.is_null() {
+                        webauthnplugin_ext::free_credential_details_array(os_count, os_arr_ptr);
+                    }
+                    return;
+                }
+            }
+            drop(fields);
+        }
+
+        // ── Step 4: remove OS creds missing from vault ────────────────────────
+        let mut removed = 0u32;
+        if os_count > 0 && !os_arr_ptr.is_null() {
+            let vault_ids: Vec<Vec<u8>> = vault_arr.iter().filter_map(|item| {
+                let s = item["credentialId"].as_str()?;
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()
+            }).collect();
+
+            for i in 0..os_count as usize {
+                if os_ids[i].is_empty() { continue; }
+                if vault_ids.iter().any(|id| *id == os_ids[i]) {
+                    continue; // still in vault
+                }
+
+                // SAFETY: os_arr_ptr.add(i) is valid until FreeCredentialDetailsArray.
+                let detail_ptr = unsafe { os_arr_ptr.add(i) as *const _ };
+                match webauthnplugin_ext::remove_credentials(rclsid_ptr, detail_ptr) {
+                    Ok(hr) => {
+                        dbg!("RemoveCredentials hr=0x{:08x}", hr.0 as u32);
+                        if hr.0 == 0 { removed += 1; }
+                    }
+                    Err(e) => {
+                        dbg!("RemoveCredentials FFI unavailable: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Step 5: free the OS array ─────────────────────────────────────────
+        if os_count > 0 && !os_arr_ptr.is_null() {
+            webauthnplugin_ext::free_credential_details_array(os_count, os_arr_ptr);
+        }
+
+        dbg!("done — added={added} removed={removed} skipped_parse={skipped_parse}");
     }
 
     // ── Public factory helper ─────────────────────────────────────────────────

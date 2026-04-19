@@ -202,9 +202,19 @@ namespace PassKee.Core.Ipc
         // The Rust sidecar performs Windows Hello UV before calling this method; the
         // 'uv' flag is trusted as-is and reflected in the assertion authData flags byte.
         // Error codes specific to this method:
-        //   NoCredentials (-32040) — empty allowList (v1 has no discoverable-credentials
-        //     support), or allowList has entries but none match the vault.
+        //   CredentialNotFound (-32020) — allowList present but no match, or discoverable
+        //     flow and no credential exists for the given rpId.
         //   InvalidOption (-32041) — caller requested options.up=false (unsupported).
+        //
+        // Discoverable credential flow (CTAP 2.1 §6.2):
+        //   An absent or empty allowList (key 3) signals a discoverable credential
+        //   request. We query the store by rpId and select the first match.
+        //   Per §6.2, the user entity (CTAP2 response key 4) is mandatory so the RP
+        //   can identify which credential was used. We include user.id unconditionally
+        //   and user.name / user.displayName only when uv=true (CTAP 2.1 §6.2 PII rule:
+        //   user-identifiable info MUST NOT be returned without user verification).
+        //   Note: v1 returns only the first matching credential; multi-credential
+        //   selection (numberOfCredentials / authenticatorGetNextAssertion) is deferred.
         private JToken HandleGetAssertionRaw(JToken? @params)
         {
             var obj = RequireObject(@params, "passkee.getAssertionRaw");
@@ -245,31 +255,43 @@ namespace PassKee.Core.Ipc
                     "passkee.getAssertionRaw: options.up=false is not supported.");
             }
 
-            // v1 has no discoverable-credentials flow: allowList is required and must match.
-            if (req.AllowListCredIds.Count == 0)
-            {
-                Debug.WriteLine("[getAssert] REJECT empty allowList (discoverable creds unsupported in v1)");
-                throw new RpcException(RpcErrorCode.CredentialNotFound,
-                    "passkee.getAssertionRaw: empty allowList — discoverable credentials are not supported in v1.");
-            }
-
-            // Select the first credential in the allowList that exists in the store.
+            bool isDiscoverable = req.AllowListCredIds.Count == 0;
             PasskeyRecord? selected = null;
-            foreach (var rawId in req.AllowListCredIds)
+
+            if (isDiscoverable)
             {
-                var credId = Base64Url.Encode(rawId);
-                var hit = _store.FindById(credId);
-                if (hit != null)
+                // Discoverable credential flow: find all credentials for the rpId and
+                // select the first. v1 limitation: multiple matches return only the
+                // first; numberOfCredentials / authenticatorGetNextAssertion deferred.
+                var candidates = _store.FindByRpId(req.RpId);
+                if (candidates.Count == 0)
                 {
-                    selected = hit;
-                    break;
+                    Debug.WriteLine($"[getAssert] REJECT discoverable — no credential found for rpId={req.RpId}");
+                    throw new RpcException(RpcErrorCode.CredentialNotFound,
+                        "passkee.getAssertionRaw: no passkey found for RP '" + req.RpId + "'.");
                 }
+                selected = candidates[0];
+                Debug.WriteLine($"[getAssert] discoverable — selected credentialId={SafePrefix(selected.CredentialId, 8)}");
             }
-            if (selected == null)
+            else
             {
-                Debug.WriteLine("[getAssert] REJECT no allowList credential matched the vault");
-                throw new RpcException(RpcErrorCode.CredentialNotFound,
-                    "passkee.getAssertionRaw: no credential in allowList matches the vault.");
+                // Non-discoverable: select the first allowList entry that exists in the vault.
+                foreach (var rawId in req.AllowListCredIds)
+                {
+                    var credId = Base64Url.Encode(rawId);
+                    var hit = _store.FindById(credId);
+                    if (hit != null)
+                    {
+                        selected = hit;
+                        break;
+                    }
+                }
+                if (selected == null)
+                {
+                    Debug.WriteLine("[getAssert] REJECT no allowList credential matched the vault");
+                    throw new RpcException(RpcErrorCode.CredentialNotFound,
+                        "passkee.getAssertionRaw: no credential in allowList matches the vault.");
+                }
             }
 
             var oldCount = selected.SignCount;
@@ -291,8 +313,12 @@ namespace PassKee.Core.Ipc
             // Convert the selected credential's stored base64url-no-pad ID back to raw
             // bytes to echo in the response descriptor (CTAP2 allows only raw bstr).
             var rawCredIdBytes = Base64Url.Decode(selected.CredentialId);
-            var responseBytes = BuildAssertionResponse(rawCredIdBytes, authData, signature);
-            Debug.WriteLine($"[getAssert] DONE response_size={responseBytes.Length}B");
+
+            // For discoverable credentials, include the user entity (CTAP2 key 4) so
+            // the RP can identify which account was used. Non-discoverable: userRecord=null.
+            PasskeyRecord? userRecord = isDiscoverable ? selected : null;
+            var responseBytes = BuildAssertionResponse(rawCredIdBytes, authData, signature, userRecord, uv);
+            Debug.WriteLine($"[getAssert] DONE response_size={responseBytes.Length}B discoverable={isDiscoverable}");
 
             return new JObject
             {
@@ -309,9 +335,10 @@ namespace PassKee.Core.Ipc
         /// Required keys:
         ///   1 = rpId (text string)
         ///   2 = clientDataHash (byte string, exactly 32 bytes)
-        ///   3 = allowList (array of PublicKeyCredentialDescriptor maps)
         ///
         /// Optional keys:
+        ///   3 = allowList (array of PublicKeyCredentialDescriptor maps)
+        ///       Absent or empty → discoverable credential flow.
         ///   4 = extensions (map)           — skipped
         ///   5 = options (map)              — {up, uv} parsed; rk ignored
         ///   6 = pinUvAuthParam             — skipped
@@ -329,7 +356,6 @@ namespace PassKee.Core.Ipc
             string? rpId = null;
             byte[]? clientDataHash = null;
             var allowList = new List<byte[]>();
-            bool allowListSeen = false;
             bool optionsUp = true;  // CTAP 2.1 §6.2: up defaults to true
             bool optionsUv = false; // and uv defaults to false
 
@@ -349,9 +375,8 @@ namespace PassKee.Core.Ipc
                                 $"passkee.getAssertionRaw: clientDataHash must be 32 bytes, got {clientDataHash.Length}.");
                         break;
 
-                    case 3: // allowList
+                    case 3: // allowList (optional: absent or empty → discoverable credential flow)
                     {
-                        allowListSeen = true;
                         int arrCount = reader.ReadArrayHeader();
                         for (int k = 0; k < arrCount; k++)
                         {
@@ -405,9 +430,7 @@ namespace PassKee.Core.Ipc
             if (clientDataHash == null)
                 throw new RpcException(RpcErrorCode.InvalidParams,
                     "passkee.getAssertionRaw: missing required CTAP2 key 2 (clientDataHash).");
-            if (!allowListSeen)
-                throw new RpcException(RpcErrorCode.InvalidParams,
-                    "passkee.getAssertionRaw: missing required CTAP2 key 3 (allowList).");
+            // Key 3 (allowList) is optional: absent or empty → discoverable credential flow.
 
             return new GetAssertionRequest
             {
@@ -427,16 +450,26 @@ namespace PassKee.Core.Ipc
         ///   1 = PublicKeyCredentialDescriptor (text-keyed: "id" (bstr), "type" (tstr))
         ///   2 = authData (byte string, 37 bytes)
         ///   3 = signature (byte string, DER-encoded ECDSA)
+        ///   4 = user entity map (text-keyed) — present only for discoverable credentials
+        ///       (when <paramref name="userRecord"/> is non-null). Contains:
+        ///         "id"          → bstr (raw user handle bytes)
+        ///         "name"        → tstr (only when uv=true, per CTAP 2.1 §6.2 PII rule)
+        ///         "displayName" → tstr (only when uv=true)
         ///
         /// Nested descriptor keys sort bytewise-lex: "id" (0x62 0x69 0x64) comes
-        /// before "type" (0x64 0x74 0x79 0x70 0x65). Omitting user/numberOfCredentials
-        /// because allowList selection is unambiguous (single match).
+        /// before "type" (0x64 0x74 0x79 0x70 0x65). User entity inner keys also
+        /// sort bytewise-lex: "id" (0x62) before "name" (0x64) before "displayName" (0x6B).
         ///
         /// Factored out so the Phase 4 hex-shape test can encode with fixed inputs —
         /// ECDSA signatures are non-deterministic so round-tripping through the full
         /// handler can't assert on exact bytes.
         /// </summary>
-        internal static byte[] BuildAssertionResponse(byte[] credentialId, byte[] authData, byte[] signature)
+        internal static byte[] BuildAssertionResponse(
+            byte[] credentialId,
+            byte[] authData,
+            byte[] signature,
+            PasskeyRecord? userRecord = null,
+            bool uv = false)
         {
             byte[] EncodeUint(ulong v)   { var ww = new CborWriter(); ww.WriteUnsignedInt(v); return ww.Encode(); }
             byte[] EncodeTstr(string s)  { var ww = new CborWriter(); ww.WriteTextString(s); return ww.Encode(); }
@@ -451,13 +484,37 @@ namespace PassKee.Core.Ipc
             });
             var descriptorBytes = descriptor.Encode();
 
-            var w = new CborWriter();
-            w.WriteMap(new[]
+            var pairs = new List<(byte[], byte[])>
             {
                 (EncodeUint(1), descriptorBytes),
                 (EncodeUint(2), EncodeBstr(authData)),
                 (EncodeUint(3), EncodeBstr(signature)),
-            });
+            };
+
+            if (userRecord != null)
+            {
+                // CTAP 2.1 §6.2: user entity is required for discoverable credentials so
+                // the RP can identify which account was asserted. The user.id field is
+                // always included; user.name and user.displayName are gated on uv=true
+                // (CTAP 2.1 §6.2 PII rule: user-identifiable info MUST NOT be returned
+                // without user verification).
+                var rawUserHandle = Base64Url.Decode(userRecord.UserHandle);
+                var userPairs = new List<(byte[], byte[])>
+                {
+                    (EncodeTstr("id"), EncodeBstr(rawUserHandle)),
+                };
+                if (uv)
+                {
+                    userPairs.Add((EncodeTstr("name"),        EncodeTstr(userRecord.UserName)));
+                    userPairs.Add((EncodeTstr("displayName"), EncodeTstr(userRecord.UserDisplayName)));
+                }
+                var userMap = new CborWriter();
+                userMap.WriteMap(userPairs);
+                pairs.Add((EncodeUint(4), userMap.Encode()));
+            }
+
+            var w = new CborWriter();
+            w.WriteMap(pairs);
             return w.Encode();
         }
 
