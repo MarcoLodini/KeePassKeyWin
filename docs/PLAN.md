@@ -145,7 +145,7 @@ Captured after the pre-open-source audit. None block making the repo public, but
 
 - [ ] **Trademark search** — "PassKee" is one letter from the industry term "passkey" (FIDO Alliance, Apple, Google, Microsoft usage). Run USPTO + EUIPO + UIBM searches in class 42 (software / security services) before public launch; consider rebranding if anything collides. Cheaper pre-public than post-public.
 - [x] **CI** — `.github/workflows/ci.yml` runs `dotnet test PassKee.sln` + `cargo test --all-targets` on Ubuntu for push/PR. Windows cross-compile gate (`cargo xwin build --release`) deferred.
-- [ ] **`CONTRIBUTING.md`** — distil the build + test flow from `docs/WINDOWS_VALIDATION.md` + `README.md` into a contributor-facing file. Given the Rust + .NET + MSIX + Windows-SDK stack, onboarding cost is high without a contributor guide.
+- [x] **`CONTRIBUTING.md`** — contributor guide at repo root. Covers host-OS matrix (Windows full / Linux-WSL tests + `cargo xwin` / macOS tests only), toolchain (.NET 8 + Rust stable + Windows SDK), build + test commands mirroring CI, live-validation gate for runtime PRs, style/commits/PR expectations, and a landmines section flagging CTAP2 int-vs-text CBOR keys, synchronous `signCount` save, `WEBAUTHN_PLUGIN_*` struct offsets, and Settings-UI non-visibility.
 - [x] **`CODE_OF_CONDUCT.md`** — Contributor Covenant v2.1 reference, reporting address matches `SECURITY.md`.
 - [ ] **`CHANGELOG.md`** — map phases to user-visible changes; low priority until the first tagged release.
 - [x] **`.github/dependabot.yml`** — Cargo + NuGet (all 5 csprojs) + github-actions; grouped PRs, weekly (actions monthly).
