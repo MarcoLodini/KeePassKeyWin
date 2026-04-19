@@ -30,6 +30,8 @@ pub enum ClientError {
     UnsupportedAlgorithm,
     #[error("credential already registered")]
     CredentialExcluded,
+    #[error("unsupported option (e.g. options.up=false)")]
+    InvalidOption,
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("internal server error: {0}")]
@@ -45,6 +47,7 @@ impl ClientError {
             -32020 => ClientError::NoCredentials,
             -32030 => ClientError::UnsupportedAlgorithm,
             -32031 => ClientError::CredentialExcluded,
+            -32041 => ClientError::InvalidOption,
             -32000 | -32001 => ClientError::ClientUnauthorized,
             -32600 | -32602 => ClientError::InvalidRequest(message),
             -32603 => ClientError::Internal(message),
@@ -262,6 +265,12 @@ mod tests {
     fn error_mapping_credential_excluded() {
         let e = ClientError::from_rpc(-32031, "already registered".into());
         assert!(matches!(e, ClientError::CredentialExcluded));
+    }
+
+    #[test]
+    fn error_mapping_invalid_option() {
+        let e = ClientError::from_rpc(-32041, "options.up=false not supported".into());
+        assert!(matches!(e, ClientError::InvalidOption));
     }
 
     #[test]

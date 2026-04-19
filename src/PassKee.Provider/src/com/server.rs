@@ -445,7 +445,8 @@ pub(crate) mod imp {
             Err(ref e @ ClientError::VaultLocked)         => { dbg_step!("RPC err: {e:?} -> E_ACCESSDENIED"); HRESULT(0x8007_0005u32 as i32) }
             Err(ref e @ ClientError::UnsupportedAlgorithm) => { dbg_step!("RPC err: {e:?} -> E_INVALIDARG");  HRESULT(E_INVALIDARG as i32) }
             Err(ref e @ ClientError::CredentialExcluded)   => { dbg_step!("RPC err: {e:?} -> E_CREDENTIAL_EXCLUDED"); HRESULT(E_CREDENTIAL_EXCLUDED as i32) }
-            Err(ClientError::NoCredentials)                => { dbg_step!("GetAssertion -> NoCredentials (possibly empty allowList - MVP punt) -> NTE_NOT_FOUND"); HRESULT(0x8009_0011u32 as i32) }
+            Err(ref e @ ClientError::InvalidOption)        => { dbg_step!("RPC err: {e:?} -> E_INVALIDARG (options.up=false)"); HRESULT(E_INVALIDARG as i32) }
+            Err(ClientError::NoCredentials)                => { dbg_step!("GetAssertion -> NoCredentials -> NTE_NOT_FOUND"); HRESULT(0x8009_0011u32 as i32) }
             Err(ref e)                                     => { dbg_step!("RPC err: {e:?} -> E_FAIL"); HRESULT(E_FAIL as i32) }
         }
     }
