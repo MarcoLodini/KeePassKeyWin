@@ -144,12 +144,12 @@ Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via
 Captured after the pre-open-source audit. None block making the repo public, but all are worth doing before a broader announcement (e.g., Hacker News, KeePass plugin-list listing).
 
 - [ ] **Trademark search** — "PassKee" is one letter from the industry term "passkey" (FIDO Alliance, Apple, Google, Microsoft usage). Run USPTO + EUIPO + UIBM searches in class 42 (software / security services) before public launch; consider rebranding if anything collides. Cheaper pre-public than post-public.
-- [ ] **CI** — no `.github/workflows/` yet. Minimum viable: one workflow running `dotnet test` + `cargo test --all-targets` on push / PR. Windows cross-compile gate (`cargo xwin build --release`) can come later.
+- [x] **CI** — `.github/workflows/ci.yml` runs `dotnet test PassKee.sln` + `cargo test --all-targets` on Ubuntu for push/PR. Windows cross-compile gate (`cargo xwin build --release`) deferred.
 - [ ] **`CONTRIBUTING.md`** — distil the build + test flow from `docs/WINDOWS_VALIDATION.md` + `README.md` into a contributor-facing file. Given the Rust + .NET + MSIX + Windows-SDK stack, onboarding cost is high without a contributor guide.
-- [ ] **`CODE_OF_CONDUCT.md`** — one-line Contributor Covenant reference.
+- [x] **`CODE_OF_CONDUCT.md`** — Contributor Covenant v2.1 reference, reporting address matches `SECURITY.md`.
 - [ ] **`CHANGELOG.md`** — map phases to user-visible changes; low priority until the first tagged release.
-- [ ] **`.github/dependabot.yml`** — security-sensitive project → auto-PRs for Cargo + NuGet dependency updates.
-- [ ] **GitHub issue + PR templates** — `.github/ISSUE_TEMPLATE/{bug,feature}.md` + `.github/PULL_REQUEST_TEMPLATE.md`.
+- [x] **`.github/dependabot.yml`** — Cargo + NuGet (all 5 csprojs) + github-actions; grouped PRs, weekly (actions monthly).
+- [x] **GitHub issue + PR templates** — `.github/ISSUE_TEMPLATE/bug_report.yml`, `feature_request.yml`, `.github/PULL_REQUEST_TEMPLATE.md`.
 - [ ] **Screenshot / demo** — a single screenshot of the Windows passkey picker listing a PassKee credential is the single highest-signal trust-builder for adoption.
 - [ ] **MSIX publisher subject placeholder** — `CN=Marco Lodini, O=PassKee, C=IT` in `Package.appxmanifest` and `ensure-dev-cert.ps1` needs to match the real code-signing cert subject once a production cert is obtained. Not a repo-public blocker; a release-engineering gate.
 - [ ] **Phase 3.1 polish (already tracked above)** — demote `eprintln!` breadcrumbs to `tracing::debug`, add `#![windows_subsystem = "windows"]`. Worth doing before the first signed MSIX ships, not before the repo goes public.

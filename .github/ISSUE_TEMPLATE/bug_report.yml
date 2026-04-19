@@ -1,0 +1,76 @@
+name: Bug report
+description: Report an issue with PassKee
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. PassKee lives at the intersection of KeePass, Windows WebAuthn, and the browser — the more context you provide, the faster we can triage.
+
+        **Before filing**: PassKee requires Windows 11 24H2 build 26100.6725+. Older Windows versions are not supported and will be closed without investigation.
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Run `winver` and paste the exact string (e.g. `Windows 11 25H2 build 26200.8037`).
+      placeholder: "Windows 11 25H2 build 26200.xxxx"
+    validations:
+      required: true
+
+  - type: input
+    id: keepass-version
+    attributes:
+      label: KeePass version
+      placeholder: "2.58.x"
+    validations:
+      required: true
+
+  - type: input
+    id: passkee-version
+    attributes:
+      label: PassKee version / commit
+      description: Git SHA (first 7 chars) or release tag.
+    validations:
+      required: true
+
+  - type: input
+    id: browser-rp
+    attributes:
+      label: Browser and relying party
+      description: e.g. "Edge 133 on webauthn.io", "Chrome 132 on google.com"
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, step by step?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages / HRESULTs / browser console output verbatim where possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Attach any relevant logs. Helpful sources:
+          - PassKee provider: `%LOCALAPPDATA%\Packages\<PassKee package family name>\LocalState\`
+          - KeePass plugin log: `%APPDATA%\KeePass\` (if present)
+          - Windows Event Viewer: Applications and Services Logs → Microsoft → Windows → WebAuthn
+      render: shell

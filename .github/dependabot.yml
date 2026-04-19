@@ -1,0 +1,33 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/src/PassKee.Provider"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      cargo-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "nuget"
+    directories:
+      - "/src/PassKee.Core"
+      - "/src/PassKee.Plugin"
+      - "/src/PassKee.Harness"
+      - "/tests/PassKee.Core.Tests"
+      - "/tests/TestSupport/KeePassStub"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      nuget-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions-deps:
+        patterns: ["*"]

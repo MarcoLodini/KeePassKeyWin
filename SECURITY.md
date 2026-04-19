@@ -20,8 +20,21 @@ preference:
    <https://github.com/marcolodini/PassKee/security/advisories/new>.
    Preferred because it keeps the coordination thread attached to the repo.
 2. **Email** — `marco.lodini@atechnordary.cloud` with subject line beginning
-   `[PassKee SECURITY]`. Encryption with PGP is optional but welcome; key
-   fingerprint will be added here once published.
+   `[PassKee SECURITY]`. Please encrypt sensitive reports with the
+   maintainer's OpenPGP key:
+
+   - **Fingerprint**: `EA3C F4AA 91CE FAC5 68CF  8894 A8BF FD77 FA72 0913`
+   - **Public key**: <https://github.com/marcolodini.gpg>, or import from a
+     public keyserver:
+
+     ```
+     gpg --keyserver hkps://keys.openpgp.org \
+         --recv-keys EA3CF4AA91CEFAC568CF8894A8BFFD77FA720913
+     ```
+
+   Always verify the full fingerprint out-of-band before trusting the key —
+   do not rely on the short key ID. If your report is time-sensitive and
+   you cannot encrypt it, send it plaintext rather than delay disclosure.
 
 Please include:
 

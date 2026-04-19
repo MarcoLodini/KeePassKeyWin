@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest an enhancement to PassKee
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim [`docs/PLAN.md`](../../docs/PLAN.md) — the request may already be planned for a later phase, or may be an explicit v1 non-goal documented in the README.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What problem are you trying to solve? Who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: A concrete description of the behavior or API you'd like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you've looked at and why they don't fit.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: WebAuthn spec references, links to related projects, prior art, etc.
