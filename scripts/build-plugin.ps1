@@ -77,20 +77,20 @@ if (-not (Test-Path $pluginCsproj)) {
 # 'KeePassKeyWin.Core.dll' could not be found" when both projects build in one
 # MSBuild process on a WSL2 repo. Cross-process + Test-Path poll gives the
 # SMB layer time to surface the Core DLL before the Plugin consumes it.
-$passKeeCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
-$passKeeCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\$Configuration\net48\KeePassKeyWin.Core.dll"
+$keePassKeyWinCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
+$keePassKeyWinCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\$Configuration\net48\KeePassKeyWin.Core.dll"
 
 Write-Host "[build-plugin] Building KeePassKeyWin.Core ($Configuration, net48)..."
-& dotnet build $passKeeCoreCsproj -f net48 -c $Configuration --nologo
+& dotnet build $keePassKeyWinCoreCsproj -f net48 -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) { throw "KeePassKeyWin.Core build failed (exit $LASTEXITCODE)." }
 
 $coreDllDeadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $coreDllDeadline) {
-    if (Test-Path $passKeeCoreDll) { break }
+    if (Test-Path $keePassKeyWinCoreDll) { break }
     Start-Sleep -Milliseconds 200
 }
-if (-not (Test-Path $passKeeCoreDll)) {
-    throw "KeePassKeyWin.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows FS sync stall)."
+if (-not (Test-Path $keePassKeyWinCoreDll)) {
+    throw "KeePassKeyWin.Core.dll did not become visible at $keePassKeyWinCoreDll within 15s (WSL<->Windows FS sync stall)."
 }
 
 Write-Host "[build-plugin] Building KeePassKeyWin.Plugin ($Configuration, net48)..."

@@ -597,11 +597,11 @@ Write-Host "[validator] --- Step 3: Build ---"
 # Split the build into two separate `dotnet` invocations with a visibility
 # poll between them so the first process exits (flushing file handles) and
 # the SMB cache settles before the second process tries to reference the DLL.
-$passKeeCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
-$passKeeCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\Release\net48\KeePassKeyWin.Core.dll"
+$keePassKeyWinCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
+$keePassKeyWinCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\Release\net48\KeePassKeyWin.Core.dll"
 
 Write-Host "[validator] Building KeePassKeyWin.Core (net48, Release)..."
-& dotnet build $passKeeCoreCsproj -f net48 -c Release --nologo
+& dotnet build $keePassKeyWinCoreCsproj -f net48 -c Release --nologo
 if ($LASTEXITCODE -ne 0) {
     Fail "KeePassKeyWin.Core build failed (exit $LASTEXITCODE)."
 }
@@ -611,11 +611,11 @@ if ($LASTEXITCODE -ne 0) {
 # "wait" and "refresh".
 $coreDllDeadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $coreDllDeadline) {
-    if (Test-Path $passKeeCoreDll) { break }
+    if (Test-Path $keePassKeyWinCoreDll) { break }
     Start-Sleep -Milliseconds 200
 }
-if (-not (Test-Path $passKeeCoreDll)) {
-    Fail "KeePassKeyWin.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows filesystem sync stall)."
+if (-not (Test-Path $keePassKeyWinCoreDll)) {
+    Fail "KeePassKeyWin.Core.dll did not become visible at $keePassKeyWinCoreDll within 15s (WSL<->Windows filesystem sync stall)."
 }
 Write-Host "[validator] KeePassKeyWin.Core output visible: OK"
 
