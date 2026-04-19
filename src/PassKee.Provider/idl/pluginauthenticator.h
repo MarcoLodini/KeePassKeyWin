@@ -1,4 +1,15 @@
-
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) Microsoft Corporation.
+ *
+ * This header is a MIDL-generated C mapping derived from
+ * https://github.com/microsoft/webauthn/blob/master/pluginauthenticator.h
+ * and is redistributed here under the MIT License. See THIRD_PARTY_LICENSES
+ * at the repo root for the full license text.
+ *
+ * PassKee as a whole is GPL-3.0-or-later. Microsoft's MIT-licensed material
+ * is included verbatim with attribution and is not relicensed.
+ */
 
 /* this ALWAYS GENERATED file contains the definitions for the interfaces */
 
