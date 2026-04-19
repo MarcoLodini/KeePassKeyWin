@@ -26,6 +26,7 @@
 /// `LPCWSTR`. Byte slices (`credential_id`, `user_handle`) are raw,
 /// unterminated, with length carried alongside in the FFI struct's
 /// `cb_*` fields.
+#[cfg(windows)]
 pub(crate) struct AddCredentialsFields {
     pub credential_id: Vec<u8>,
     pub user_handle:   Vec<u8>,
@@ -49,6 +50,7 @@ pub(crate) struct AddCredentialsFields {
 /// without padding (matches how the C# plugin stores both fields inside
 /// a PwEntry). Mixed with the Phase-3 legacy `cbor` field which remains
 /// base64-standard-with-padding — do not confuse the two decoders.
+#[cfg(windows)]
 pub(crate) fn parse_add_credentials_fields(
     v: &serde_json::Value,
 ) -> Result<AddCredentialsFields, &'static str> {
@@ -83,6 +85,7 @@ pub(crate) fn parse_add_credentials_fields(
 /// `as_ptr()` yields a valid, non-null `LPCWSTR` that dereferences to 0.
 /// Microsoft's `PluginCredentialManager.cpp:235-238` validates non-null
 /// but does not reject zero-length wide strings.
+#[cfg(windows)]
 fn encode_utf16_nul(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0u16)).collect()
 }
@@ -660,6 +663,7 @@ impl From<crate::com::types::Guid> for windows::core::GUID {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::parse_add_credentials_fields;
     use crate::com::types::*;
 
@@ -686,11 +690,13 @@ mod tests {
 
     /// Helper: base64url-no-pad encode a byte slice. Used to construct
     /// plausible JSON payloads matching the locked wire contract.
+    #[cfg(windows)]
     fn b64url(bytes: &[u8]) -> String {
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_happy_path() {
         let cred_id = b"\x01\x02\x03\x04\x05";
@@ -727,6 +733,7 @@ mod tests {
     /// Convenience: run the parser and assert the error path fires with
     /// the given field name. Using a helper keeps each test short and
     /// avoids coupling the test to the (non-PartialEq) success struct.
+    #[cfg(windows)]
     fn expect_err(v: &serde_json::Value, expected: &str) {
         match parse_add_credentials_fields(v) {
             Err(got) => assert_eq!(got, expected, "wrong skip-field name"),
@@ -734,6 +741,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_missing_credential_id() {
         let v = serde_json::json!({
@@ -746,6 +754,7 @@ mod tests {
         expect_err(&v, "credentialIdB64Url");
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_missing_rp_id() {
         let v = serde_json::json!({
@@ -758,6 +767,7 @@ mod tests {
         expect_err(&v, "rpId");
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_missing_user_display_name() {
         let v = serde_json::json!({
@@ -770,6 +780,7 @@ mod tests {
         expect_err(&v, "userDisplayName");
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_bad_base64() {
         // Padded standard base64 is NOT valid URL-safe-no-pad — decode fails.
@@ -784,6 +795,7 @@ mod tests {
         expect_err(&v, "credentialIdB64Url decode");
     }
 
+    #[cfg(windows)]
     #[test]
     fn parse_add_credentials_fields_empty_strings_ok() {
         // Microsoft's PluginCredentialManager.cpp validator rejects null

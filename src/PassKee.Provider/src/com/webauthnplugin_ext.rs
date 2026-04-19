@@ -17,7 +17,10 @@
 //!      "probe once and cache" pattern fits cleanly.
 //!
 //! All four credential-management functions share the same `OnceLock`-cached
-//! `Bindings` struct and single `LoadLibraryW` call.
+//! `Bindings` struct and single `LoadLibraryW` call. `add_credentials` is
+//! required (the OnceLock stores `Err` only if the DLL itself fails to load or
+//! that one symbol is absent). The three CRUD symbols are stored as `Option` so
+//! a missing export on an older servicing update cannot poison `add_credentials`.
 //!
 //! Memory ownership:
 //!   - Add / Remove: caller-owned buffers. The runtime copies what it needs
@@ -112,10 +115,13 @@ type PfnFreeCredentialDetailsArray = unsafe extern "system" fn(
 // ── Cached bindings ───────────────────────────────────────────────────────────
 
 struct Bindings {
-    add_credentials:              PfnAddCredentials,
-    get_all_credentials:          PfnGetAllCredentials,
-    remove_credentials:           PfnRemoveCredentials,
-    free_credential_details_array: PfnFreeCredentialDetailsArray,
+    add_credentials:               PfnAddCredentials,
+    // The three CRUD symbols are `Option` — absent on builds older than the
+    // one where they shipped. A missing symbol must NOT prevent add_credentials
+    // from working (which has been stable since Phase 4 / KB5068861).
+    get_all_credentials:           Option<PfnGetAllCredentials>,
+    remove_credentials:            Option<PfnRemoveCredentials>,
+    free_credential_details_array: Option<PfnFreeCredentialDetailsArray>,
 }
 
 unsafe impl Send for Bindings {}
@@ -135,7 +141,8 @@ fn bindings() -> Result<&'static Bindings, &'static str> {
         let hmod: HMODULE = unsafe { LoadLibraryW(PCWSTR(dll_name.as_ptr())) }
             .map_err(|e| format!("LoadLibraryW(webauthn.dll) failed: {e}"))?;
 
-        macro_rules! resolve {
+        // Required symbol — fail the whole OnceLock if absent.
+        macro_rules! resolve_required {
             ($name:literal, $ty:ty) => {{
                 let proc = unsafe { GetProcAddress(hmod, PCSTR($name.as_ptr())) }
                     .ok_or_else(|| {
@@ -152,20 +159,29 @@ fn bindings() -> Result<&'static Bindings, &'static str> {
             }};
         }
 
+        // Optional symbols — absent on some builds; stored as None, not an error.
+        macro_rules! resolve_opt {
+            ($name:literal, $ty:ty) => {
+                unsafe { GetProcAddress(hmod, PCSTR($name.as_ptr())) }.map(|proc| unsafe {
+                    std::mem::transmute::<unsafe extern "system" fn() -> isize, $ty>(proc)
+                })
+            };
+        }
+
         Ok(Bindings {
-            add_credentials: resolve!(
+            add_credentials: resolve_required!(
                 b"WebAuthNPluginAuthenticatorAddCredentials\0",
                 PfnAddCredentials
             ),
-            get_all_credentials: resolve!(
+            get_all_credentials: resolve_opt!(
                 b"WebAuthNPluginAuthenticatorGetAllCredentials\0",
                 PfnGetAllCredentials
             ),
-            remove_credentials: resolve!(
+            remove_credentials: resolve_opt!(
                 b"WebAuthNPluginAuthenticatorRemoveCredentials\0",
                 PfnRemoveCredentials
             ),
-            free_credential_details_array: resolve!(
+            free_credential_details_array: resolve_opt!(
                 b"WebAuthNPluginAuthenticatorFreeCredentialDetailsArray\0",
                 PfnFreeCredentialDetailsArray
             ),
@@ -207,9 +223,12 @@ pub(crate) fn get_all_credentials(
     rclsid: *const Guid,
 ) -> Result<(u32, *mut WebauthnPluginCredentialDetails), String> {
     let b = bindings().map_err(|s| s.to_string())?;
+    let f = b.get_all_credentials.ok_or_else(|| {
+        "WebAuthNPluginAuthenticatorGetAllCredentials not exported by webauthn.dll on this build".to_string()
+    })?;
     let mut count: u32 = 0;
     let mut arr: *mut WebauthnPluginCredentialDetails = std::ptr::null_mut();
-    let hr = unsafe { (b.get_all_credentials)(rclsid, &mut count, &mut arr) };
+    let hr = unsafe { f(rclsid, &mut count, &mut arr) };
     if hr.is_err() {
         return Err(format!("GetAllCredentials failed: 0x{:08x}", hr.0 as u32));
     }
@@ -226,7 +245,10 @@ pub(crate) fn remove_credentials(
     detail: *const WebauthnPluginCredentialDetails,
 ) -> Result<HRESULT, String> {
     let b = bindings().map_err(|s| s.to_string())?;
-    Ok(unsafe { (b.remove_credentials)(rclsid, 1, detail) })
+    let f = b.remove_credentials.ok_or_else(|| {
+        "WebAuthNPluginAuthenticatorRemoveCredentials not exported by webauthn.dll on this build".to_string()
+    })?;
+    Ok(unsafe { f(rclsid, 1, detail) })
 }
 
 /// Call `WebAuthNPluginAuthenticatorFreeCredentialDetailsArray`.
@@ -246,10 +268,12 @@ pub(crate) fn free_credential_details_array(
     if count == 0 || arr.is_null() {
         return;
     }
-    // Bindings may not be available (e.g. on Linux or old builds); if so,
-    // there is nothing to free (GetAllCredentials would also have failed).
+    // If bindings failed or the symbol is absent, there is nothing to free —
+    // GetAllCredentials would have returned Err before any allocation occurred.
     if let Ok(b) = bindings() {
-        unsafe { (b.free_credential_details_array)(count, arr) };
+        if let Some(f) = b.free_credential_details_array {
+            unsafe { f(count, arr) };
+        }
     }
 }
 
