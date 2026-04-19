@@ -1,13 +1,12 @@
 # PassKee — Implementation Plan (live)
 
-Live task tracking. Canonical architectural plan lives at `~/.claude/plans/floofy-bubbling-axolotl.md` (outside the repo). In-repo summary: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Live task tracking — see [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design reference. This file is the maintainer's development log; unchecked items are deferrals, not promises.
 
 Migrate discrete implementable tasks to GitHub Issues once the architecture stabilizes and rewrites slow down.
 
 ## Phase 0 — Scaffolding ✓
 
 - [x] Repo directory structure
-- [x] Project `MEMORY.md`
 - [x] `README.md` with OS requirement + v1 non-goals
 - [x] `LICENSE` (GPL-3 notice)
 - [x] `.gitignore` (C# + Rust + MSIX)
@@ -68,7 +67,7 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 > **Architecture pivot (Session 3):** out-of-process activation via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via DLL. The in-proc code path (`src/com/dll.rs`) was deleted; class factory + IClassFactory vtable live in `passkee-provider.exe`'s `main()` under `-PluginActivated`.
 >
-> **ABI archaeology (Session 4):** Marco's locally-installed SDK 10.0.26100.0 declares a truncated 7-field `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS`. The runtime DLL on build 26200.8037 implements the 9-field 72-byte shape from SDK 10.0.26100.7175 (the version PasskeyManager declares). Four wrong guesses (7-field with null logos, 7-field with non-null logos, 9-field with inline 16-byte GUID, 9-field with pointer GUID and string CLSID) before the research agent extracted the authoritative header from NuGet. `rclsid` is `REFCLSID` = 8-byte pointer-to-GUID; the two `SupportedRpIds` fields at the tail were being read from stack garbage and crashed (STATUS_ACCESS_VIOLATION) when that garbage looked like a non-zero count.
+> **ABI archaeology (Session 4):** The locally-installed SDK 10.0.26100.0 declares a truncated 7-field `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS`. The runtime DLL on build 26200.8037 implements the 9-field 72-byte shape from SDK 10.0.26100.7175 (the version PasskeyManager declares). Four wrong guesses (7-field with null logos, 7-field with non-null logos, 9-field with inline 16-byte GUID, 9-field with pointer GUID and string CLSID) before the research agent extracted the authoritative header from NuGet. `rclsid` is `REFCLSID` = 8-byte pointer-to-GUID; the two `SupportedRpIds` fields at the tail were being read from stack garbage and crashed (STATUS_ACCESS_VIOLATION) when that garbage looked like a non-zero count.
 
 - [x] Add `-PluginActivated` arg handling in `passkee-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages
 - [x] Move `IPluginAuthenticatorImpl` / vtable into the EXE binary; delete `src/com/dll.rs` entirely
@@ -82,7 +81,7 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 ## Phase 3 — End-to-end `MakeCredential` ✅ GREEN 2026-04-18
 
-Live browser E2E PASSED on Marco's Win11 25H2 box. Registration at webauthn.io via PassKee succeeds end-to-end.
+Live browser E2E PASSED on Win11 25H2 build 26200.8037. Registration at webauthn.io via PassKee succeeds end-to-end.
 
 - [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/PassKee.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard. Session 6 fix: `SkipValue` tolerates MT7 simple values (false/true/null/undefined) so we can ignore `options: {rk:true, uv:true}` — webauthn.io sends them and we were rejecting.
 - [x] authData construction with real UV flag — `AuthDataBuilder.Build/BuildAssertion` now require explicit `userVerified` (no default); flag propagated from Rust-side UV result
@@ -97,7 +96,7 @@ Live browser E2E PASSED on Marco's Win11 25H2 box. Registration at webauthn.io v
 
 ## Phase 4 — End-to-end `GetAssertion` ✅ GREEN 2026-04-19
 
-Live browser E2E PASSED on Marco's Win11 25H2 box. Login at webauthn.io via PassKee succeeds end-to-end — passkey picker shows the PassKee credential, Windows Hello UV fires, assertion signs, server-side verification accepts the login.
+Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via PassKee succeeds end-to-end — passkey picker shows the PassKee credential, Windows Hello UV fires, assertion signs, server-side verification accepts the login.
 
 - [x] `WebAuthNPluginAuthenticatorAddCredentials` FFI — dynamic-load binding + `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` struct (64B, x64 layout asserted) in `src/PassKee.Provider/src/com/webauthnplugin_ext.rs`; called from `dispatch_operation`'s MakeCredential success arm; best-effort (logs and continues on failure so webauthn.io registration isn't held hostage to picker visibility)
 - [x] `passkee.makeCredentialRaw` response extended with 6 fields (`credentialIdB64Url`, `rpId`, `rpName`, `userHandleB64Url`, `userName`, `userDisplayName`) — Rust sidecar decodes and populates `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS`

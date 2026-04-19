@@ -8,15 +8,15 @@
 //! `EXPERIMENTAL_WebAuthNPluginAddAuthenticator`.
 //!
 //! Any change to this blob that passes the unit tests below still has to
-//! clear two additional runtime checks on Marco's Windows box:
+//! clear two additional runtime checks on a live Win11 target:
 //!   1. `passkee-provider.exe register` returning S_OK.
 //!   2. `PassKee` appearing in Settings → Accounts → Passkeys → Advanced.
 
 /// PassKee's plugin AAGUID. Randomly generated once, baked in — stable
 /// across installs so credentials sync-attested by AAGUID keep working.
 /// If a different AAGUID is ever needed (e.g. v2 of the provider),
-/// generate a new RFC-4122 v4 UUID, update this constant, and refresh
-/// the MEMORY.md note.
+/// generate a new RFC-4122 v4 UUID, update this constant, and update
+/// the `PASSKEE_AAGUID` documentation.
 ///
 /// Bytes of `a97d1e2b-4c8f-4a3e-9bd6-5f82c1476e3d` — verified v4 per
 /// RFC 4122 (version nibble = 4, variant bits = 10xx).

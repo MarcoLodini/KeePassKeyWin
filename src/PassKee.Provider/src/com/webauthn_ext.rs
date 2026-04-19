@@ -40,7 +40,7 @@ type PfnAdd = unsafe extern "system" fn(
 ) -> HRESULT;
 
 /// Remove takes `REFCLSID` (const GUID*) per webauthnplugin.h. An earlier
-/// version of this binding used `*const u16` (LPCWSTR) matching Marco's
+/// version of this binding used `*const u16` (LPCWSTR) matching the
 /// outdated 10.0.26100.0 SDK header — that SDK lagged the runtime ABI.
 type PfnRemove = unsafe extern "system" fn(*const Guid) -> HRESULT;
 

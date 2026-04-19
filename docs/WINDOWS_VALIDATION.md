@@ -248,7 +248,7 @@ are Phase 2.2.
 .\scripts\validate-phase2.ps1
 
 # WSL cross-compile pattern — build on WSL, validate on Windows:
-.\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\Ubuntu\home\marco\personal\repo\PassKee\src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+.\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\<your-distro>\<path-to-your-checkout>\src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
 ```
 
 The WSL path form works because `build-msix.ps1` copies the DLL + EXE into its

@@ -1,6 +1,6 @@
 # PassKee — Architecture
 
-Condensed architectural reference. Canonical plan: `~/.claude/plans/floofy-bubbling-axolotl.md`.
+Condensed architectural reference. See [`PLAN.md`](PLAN.md) for the live implementation log.
 
 ## Two processes
 

@@ -181,7 +181,7 @@ pub(crate) mod imp {
                 // concurrently, both read the same nonce; the first handshake
                 // wins, the second gets HandshakeInvalid and drops the pipe.
                 // Not a v1 concern — browsers don't register concurrently.
-                // Documented in MEMORY.md.
+                // Documented in docs/IPC_PROTOCOL.md.
                 let pipe = runtime.block_on(async {
                     let mut p = match crate::ipc::PipeClient::connect(session_id).await {
                         Ok(p)  => { dbg_step!("pipe connect OK"); p }
@@ -560,7 +560,7 @@ impl Drop for ComUninitGuard {
 /// heap-allocated response struct — we free it immediately via
 /// `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. The key is
 /// intentionally discarded (signature-verification on incoming plugin
-/// requests is a Phase 5 non-goal; see MEMORY.md).
+/// requests is a Phase 5 non-goal; see docs/PLAN.md).
 ///
 /// Idempotence: Microsoft's docs claim re-register updates an existing
 /// registration. Empirically on Win11 25H2 26200.8037 the API returns

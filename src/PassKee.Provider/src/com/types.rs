@@ -126,7 +126,7 @@ pub const IID_IPLUGIN_AUTHENTICATOR: Guid = Guid {
 /// as its SDK requirement).
 ///
 /// This is the AUTHORITATIVE layout, not the truncated 7-field shape
-/// declared in Marco's locally-installed SDK 10.0.26100.0 header. That
+/// declared in the 10.0.26100.0 SDK header. That
 /// older header predates the final two fields (`cSupportedRpIds` and
 /// `ppwszSupportedRpIds`) even though the runtime webauthn.dll shipping
 /// on Win11 25H2 (build 26200.x) already implements the full 9-field
@@ -196,12 +196,12 @@ pub struct WebauthnPluginAddAuthenticatorResponse {
 ///
 /// **The `rguidTransactionId` field is `REFGUID`, i.e. `const GUID*` — a
 /// pointer, NOT an inline GUID.** Same ABI shape trap as
-/// `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.rclsid` (Session 4). Passing
+/// `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.rclsid`. Passing
 /// an inline 16-byte Guid shifts every subsequent field by +8 — the
 /// runtime reads `pwszUsername` at offset 16 (the high 8 bytes of our
 /// inline GUID) as a `const GUID*` and dereferences it, crashing with
 /// `STATUS_ACCESS_VIOLATION` inside `webauthn.dll+0xaa98a` on the first
-/// live Phase 3 browser MakeCredential attempt (Session 6).
+/// live Phase 3 browser MakeCredential attempt.
 ///
 /// x64 layout (32 bytes total):
 ///   offset  0: hwnd                 (HWND  = isize, 8)
