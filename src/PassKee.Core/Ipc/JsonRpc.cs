@@ -48,6 +48,11 @@ namespace PassKee.Core.Ipc
         public const int CredentialNotFound   = -32020;
         public const int UnsupportedAlgorithm = -32030;
         public const int CredentialExcluded   = -32031;
+        // GetAssertion (CTAP2 §6.2) — reuse CredentialNotFound (-32020) for the
+        // "no matching credential / empty allowList" case; Rust sidecar maps
+        // -32020 → NTE_NOT_FOUND (0x80090011).
+        //   InvalidOption (-32041) → sidecar falls through to E_FAIL (MVP punt).
+        public const int InvalidOption        = -32041;
     }
 
     // Per-connection mutable state threaded through each RPC dispatch.

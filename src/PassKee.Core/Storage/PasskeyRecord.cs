@@ -20,5 +20,11 @@ namespace PassKee.Core.Storage
         public string Flags { get; set; } = string.Empty;          // reserved for future flags
         public DateTime CreationTime { get; set; } = DateTime.UtcNow;
         public DateTime LastUsedTime { get; set; } = DateTime.MinValue;
+        /// <summary>
+        /// Monotonic counter incremented on each GetAssertion. Written big-endian
+        /// into bytes [33..37] of the assertion authData. Persisted per-entry as
+        /// CustomData["PassKee.signCount"].
+        /// </summary>
+        public uint SignCount { get; set; } = 0;
     }
 }

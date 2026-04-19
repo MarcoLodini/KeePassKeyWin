@@ -121,6 +121,24 @@ namespace PassKee.Core.Cbor
         }
 
         /// <summary>
+        /// Reads a CBOR simple value <c>true</c> (0xF5) or <c>false</c> (0xF4).
+        /// Required by CTAP 2.1 §6.2 GetAssertion for the <c>options</c> map (up/uv).
+        ///
+        /// This method is the ONLY typed reader that admits a major-type-7 initial byte.
+        /// All other typed readers keep rejecting MT7 — they can't return a bool anyway,
+        /// and tolerating MT7 broadly would expand attack surface for no benefit.
+        /// </summary>
+        public bool ReadBool()
+        {
+            EnsureAvailable(1);
+            byte b = _buf[_pos];
+            if (b == 0xF5) { _pos++; return true; }
+            if (b == 0xF4) { _pos++; return false; }
+            throw new CborReaderException(
+                $"Expected CBOR bool (0xF4/0xF5), got 0x{b:X2} at offset {_pos}.");
+        }
+
+        /// <summary>
         /// Skips the next complete CBOR item (any type), including all nested content.
         /// Used to consume unknown/ignored keys in a map.
         /// </summary>

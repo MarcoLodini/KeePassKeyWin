@@ -445,8 +445,13 @@ where
 /// CLSID of the PassKee plugin as a Guid struct. Declared `static` (not
 /// `const`) so we can take its address — the options struct's `rclsid`
 /// field is `REFCLSID` (a pointer-to-GUID), not an inline GUID.
+///
+/// Also reused by `com::server::dispatch_operation` (via
+/// `&CLSID_GUID as *const _`) when calling `WebAuthNPluginAuthenticator
+/// AddCredentials` after a successful MakeCredential — same `REFCLSID`
+/// pointer-not-inline convention.
 #[cfg(windows)]
-static CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
+pub(crate) static CLSID_GUID: crate::com::types::Guid = crate::com::types::Guid {
     data1: 0xd26b_cf6f,
     data2: 0xb54c,
     data3: 0x43ff,

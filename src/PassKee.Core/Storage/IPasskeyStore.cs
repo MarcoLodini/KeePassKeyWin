@@ -30,5 +30,18 @@ namespace PassKee.Core.Storage
 
         /// <summary>True when a KeePass database is open and accessible.</summary>
         bool IsVaultOpen { get; }
+
+        /// <summary>
+        /// Atomically increments the signCount for the given credential by 1,
+        /// persists to durable storage, and returns the new value.
+        /// Throws <see cref="System.Collections.Generic.KeyNotFoundException"/>
+        /// if the credential is not found.
+        /// MUST be thread-safe (concurrent logins from parallel browser flows).
+        /// MUST synchronously persist to durable storage — without this, a KeePass
+        /// close-without-save replays the old signCount, which webauthn-compatible
+        /// relying parties may interpret as a cloned authenticator (WebAuthn L3
+        /// §6.1.1) and lock the account.
+        /// </summary>
+        uint IncrementSignCount(string credentialId);
     }
 }

@@ -25,6 +25,11 @@ pub mod com {
     // (not in windows-rs 0.61). Used by exe_server::cmd_register / cmd_unregister.
     #[cfg(windows)]
     pub mod webauthn_ext;
+    // Manual FFI bindings for WebAuthNPluginAuthenticator* credential-management
+    // APIs (not in windows-rs 0.61). Used by server::dispatch_operation's
+    // post-MakeCredential hook to publish credentials into Windows' autofill DB.
+    #[cfg(windows)]
+    pub mod webauthnplugin_ext;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;

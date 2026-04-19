@@ -97,12 +97,24 @@ Live browser E2E PASSED on Marco's Win11 25H2 box. Registration at webauthn.io v
 
 ## Phase 4 — End-to-end `GetAssertion`
 
-- [ ] Discoverable credential enumeration via `passkee.listCredentials`
-- [ ] Credential selection UI (only when multiple match)
-- [ ] `WebAuthNPluginAuthenticatorAddCredentials` sync after creation
-- [ ] `passkee.signAssertion` IPC round-trip
-- [ ] webauthn.io from Edge: login succeeds, signature verifies server-side
-- [ ] Settings page reflects credential adds/removes
+Code-complete on Linux CI 2026-04-19; browser E2E is Marco's Windows-side gate.
+
+- [x] `WebAuthNPluginAuthenticatorAddCredentials` FFI — dynamic-load binding + `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` struct (64B, x64 layout asserted) in `src/PassKee.Provider/src/com/webauthnplugin_ext.rs`; called from `dispatch_operation`'s MakeCredential success arm; best-effort (logs and continues on failure so webauthn.io registration isn't held hostage to picker visibility)
+- [x] `passkee.makeCredentialRaw` response extended with 6 fields (`credentialIdB64Url`, `rpId`, `rpName`, `userHandleB64Url`, `userName`, `userDisplayName`) — Rust sidecar decodes and populates `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS`
+- [x] `passkee.getAssertionRaw` IPC handler — CTAP2 §6.2 request parse (integer-keyed top + text-keyed `PublicKeyCredentialDescriptor` in allowList), credential selection from allowList, ES256 DER-signed assertion, CTAP2-integer-keyed response with text-keyed nested `credential` descriptor (same shape-discipline as Phase 3's attestationObject — hex-shape canary test added)
+- [x] `CborReader.ReadBool()` for CTAP2 `options` map (MT7 simple values 0xF4/0xF5)
+- [x] `PasskeyRecord.SignCount` + `IPasskeyStore.IncrementSignCount` — thread-safe read-increment-write with **synchronous `PwDatabase.Save`** (critical: prevents signCount-rollback replay after KeePass-close-without-save, which would get the user permanently locked out at the RP per WebAuthn §6.1.1 cloned-authenticator clause)
+- [x] HRESULT mapping: `ClientError::NoCredentials` → `NTE_NOT_FOUND (0x80090011)` (empty allowList / no allowList match)
+- [x] `AuthDataBuilder.BuildAssertion(rpId, userVerified, signCount)` — extended from Phase 3's hardcoded-zero signCount; 37-byte assertion authData with explicit UV propagation
+- [x] Linux CI green: `cargo test --all-targets` 54 passing; `dotnet test` 220 passing (up from 183); `cargo xwin build --target x86_64-pc-windows-msvc --release` clean
+- [ ] **webauthn.io from Edge: login succeeds, signature verifies server-side** — Marco's Windows E2E gate
+- [ ] Settings page reflects credential adds/removes (verifying OS-side state after AddCredentials)
+
+**MVP-scope punts (explicit, documented for Phase 4.1 follow-up):**
+- Discoverable-credential / usernameless flow (empty allowList) returns `NoCredentials`/`NTE_NOT_FOUND`. webauthn.io's default login sends a non-empty allowCredentials, so this doesn't block the E2E gate — only the "usernameless" toggle.
+- `RemoveCredentials` / `GetAllCredentials` / `RemoveAllCredentials` FFIs not bound. No vault↔OS reconciliation at startup (so a vault-side delete leaves an orphan in the Windows picker until next `AddCredentials` for a different cred). Flag: consider binding + startup reconciliation for Phase 4.1.
+- `options.up=false` → `InvalidOption` (-32041), falls through to E_FAIL on Rust side (unmapped). Implausible in real flows per DA review.
+- UV trust boundary: Rust sidecar's `PerformUserVerification` success is propagated to plugin as a trusted `uv: true` JSON-RPC flag (same model as Phase 3). If future hardening is required, derive the UV bit from the Windows UV-response struct rather than Rust's say-so.
 
 ## Phase 5 — Polish + RS256 + deferred hardening
 

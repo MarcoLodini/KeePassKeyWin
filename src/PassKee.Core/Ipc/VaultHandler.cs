@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Newtonsoft.Json.Linq;
 using PassKee.Core.Cbor;
 using PassKee.Core.Crypto;
@@ -41,6 +42,7 @@ namespace PassKee.Core.Ipc
                 "passkee.deleteCredential"     => DeleteCredential(@params),
                 "passkee.enumerateForSync"     => EnumerateForSync(),
                 "passkee.makeCredentialRaw"    => HandleMakeCredentialRaw(@params),
+                "passkee.getAssertionRaw"      => HandleGetAssertionRaw(@params),
                 _ => throw new RpcException(RpcErrorCode.MethodNotFound, $"Method not found: {method}")
             };
         }
@@ -177,10 +179,296 @@ namespace PassKee.Core.Ipc
             // Encode CTAP2 attestation object: {1: "none", 2: authData, 3: {}}.
             var responseBytes = BuildAttestationObject(authData);
 
+            // Include the user/RP metadata the Rust sidecar needs to populate
+            // WEBAUTHN_PLUGIN_ADD_CREDENTIAL so Windows' OS-wide credential store
+            // knows this credential exists (Phase 4 login picker). credentialIdB64Url
+            // and userHandleB64Url are base64url-no-pad, ready to pass through.
+            return new JObject
+            {
+                ["cbor"]               = Convert.ToBase64String(responseBytes),
+                ["credentialIdB64Url"] = record.CredentialId,
+                ["rpId"]               = req.RpId,
+                ["rpName"]             = req.RpName,
+                ["userHandleB64Url"]   = req.UserHandle,
+                ["userName"]           = req.UserName,
+                ["userDisplayName"]    = req.UserDisplayName,
+            };
+        }
+
+        // passkee.getAssertionRaw
+        // params: { cbor: "<base64-std of CTAP2 authenticatorGetAssertion request bytes>", uv: true|false }
+        // result: { cbor: "<base64-std of CTAP2 authenticatorGetAssertion response bytes>" }
+        //
+        // The Rust sidecar performs Windows Hello UV before calling this method; the
+        // 'uv' flag is trusted as-is and reflected in the assertion authData flags byte.
+        // Error codes specific to this method:
+        //   NoCredentials (-32040) — empty allowList (v1 has no discoverable-credentials
+        //     support), or allowList has entries but none match the vault.
+        //   InvalidOption (-32041) — caller requested options.up=false (unsupported).
+        private JToken HandleGetAssertionRaw(JToken? @params)
+        {
+            var obj = RequireObject(@params, "passkee.getAssertionRaw");
+
+            var cborB64 = RequireString(obj, "cbor");
+            var uvToken = obj["uv"];
+            bool uv = uvToken?.Value<bool>() ?? false;
+
+            byte[] cborBytes;
+            try
+            {
+                cborBytes = Convert.FromBase64String(cborB64);
+            }
+            catch (FormatException ex)
+            {
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "passkee.getAssertionRaw: 'cbor' is not valid base64: " + ex.Message);
+            }
+
+            GetAssertionRequest req;
+            try
+            {
+                req = ParseGetAssertionCbor(cborBytes);
+            }
+            catch (CborReaderException ex)
+            {
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "passkee.getAssertionRaw: malformed CBOR: " + ex.Message);
+            }
+
+            Debug.WriteLine($"[getAssert] ENTRY clientDataHash_len={req.ClientDataHash.Length} rpId={req.RpId} allowList_count={req.AllowListCredIds.Count}");
+
+            // options.up=false is forbidden by our v1 (we always require user presence).
+            if (!req.OptionsUp)
+            {
+                Debug.WriteLine("[getAssert] REJECT options.up=false");
+                throw new RpcException(RpcErrorCode.InvalidOption,
+                    "passkee.getAssertionRaw: options.up=false is not supported.");
+            }
+
+            // v1 has no discoverable-credentials flow: allowList is required and must match.
+            if (req.AllowListCredIds.Count == 0)
+            {
+                Debug.WriteLine("[getAssert] REJECT empty allowList (discoverable creds unsupported in v1)");
+                throw new RpcException(RpcErrorCode.CredentialNotFound,
+                    "passkee.getAssertionRaw: empty allowList — discoverable credentials are not supported in v1.");
+            }
+
+            // Select the first credential in the allowList that exists in the store.
+            PasskeyRecord? selected = null;
+            foreach (var rawId in req.AllowListCredIds)
+            {
+                var credId = Base64Url.Encode(rawId);
+                var hit = _store.FindById(credId);
+                if (hit != null)
+                {
+                    selected = hit;
+                    break;
+                }
+            }
+            if (selected == null)
+            {
+                Debug.WriteLine("[getAssert] REJECT no allowList credential matched the vault");
+                throw new RpcException(RpcErrorCode.CredentialNotFound,
+                    "passkee.getAssertionRaw: no credential in allowList matches the vault.");
+            }
+
+            var oldCount = selected.SignCount;
+            uint newCount = _store.IncrementSignCount(selected.CredentialId);
+            Debug.WriteLine($"[getAssert] selected credentialId={SafePrefix(selected.CredentialId, 8)} userName={selected.UserName}");
+            Debug.WriteLine($"[getAssert] signCount {oldCount} -> {newCount}");
+
+            // Build 37-byte assertion authData (no attested credential data).
+            var authData = AuthDataBuilder.BuildAssertion(selected.RpId, userVerified: uv, signCount: newCount);
+
+            // WebAuthn §7.2: the ES256 signature covers authData || clientDataHash.
+            var signInput = new byte[authData.Length + req.ClientDataHash.Length];
+            Buffer.BlockCopy(authData, 0, signInput, 0, authData.Length);
+            Buffer.BlockCopy(req.ClientDataHash, 0, signInput, authData.Length, req.ClientDataHash.Length);
+
+            var pkcs8 = Convert.FromBase64String(selected.PrivateKeyPkcs8);
+            var signature = EcdsaSigner.Sign(pkcs8, signInput);
+
+            // Convert the selected credential's stored base64url-no-pad ID back to raw
+            // bytes to echo in the response descriptor (CTAP2 allows only raw bstr).
+            var rawCredIdBytes = Base64Url.Decode(selected.CredentialId);
+            var responseBytes = BuildAssertionResponse(rawCredIdBytes, authData, signature);
+            Debug.WriteLine($"[getAssert] DONE response_size={responseBytes.Length}B");
+
             return new JObject
             {
                 ["cbor"] = Convert.ToBase64String(responseBytes),
             };
+        }
+
+        private static string SafePrefix(string s, int n)
+            => s.Length <= n ? s : s.Substring(0, n);
+
+        /// <summary>
+        /// Parses the CTAP2 authenticatorGetAssertion input map (§6.2).
+        ///
+        /// Required keys:
+        ///   1 = rpId (text string)
+        ///   2 = clientDataHash (byte string, exactly 32 bytes)
+        ///   3 = allowList (array of PublicKeyCredentialDescriptor maps)
+        ///
+        /// Optional keys:
+        ///   4 = extensions (map)           — skipped
+        ///   5 = options (map)              — {up, uv} parsed; rk ignored
+        ///   6 = pinUvAuthParam             — skipped
+        ///   7 = pinUvAuthProtocol          — skipped
+        ///
+        /// PublicKeyCredentialDescriptor is a text-keyed map with "type", "id",
+        /// optional "transports". Entries whose "type" is not "public-key" are
+        /// silently filtered out (per CTAP 2.1 §6.2 unknown-type handling).
+        /// </summary>
+        private GetAssertionRequest ParseGetAssertionCbor(byte[] data)
+        {
+            var reader = new CborReader(data);
+            int mapCount = reader.ReadMapHeader();
+
+            string? rpId = null;
+            byte[]? clientDataHash = null;
+            var allowList = new List<byte[]>();
+            bool allowListSeen = false;
+            bool optionsUp = true;  // CTAP 2.1 §6.2: up defaults to true
+            bool optionsUv = false; // and uv defaults to false
+
+            for (int i = 0; i < mapCount; i++)
+            {
+                ulong key = reader.ReadUnsignedInt();
+                switch (key)
+                {
+                    case 1: // rpId
+                        rpId = reader.ReadTextString();
+                        break;
+
+                    case 2: // clientDataHash
+                        clientDataHash = reader.ReadByteString();
+                        if (clientDataHash.Length != 32)
+                            throw new RpcException(RpcErrorCode.InvalidParams,
+                                $"passkee.getAssertionRaw: clientDataHash must be 32 bytes, got {clientDataHash.Length}.");
+                        break;
+
+                    case 3: // allowList
+                    {
+                        allowListSeen = true;
+                        int arrCount = reader.ReadArrayHeader();
+                        for (int k = 0; k < arrCount; k++)
+                        {
+                            int descCount = reader.ReadMapHeader();
+                            byte[]? descId = null;
+                            string? descType = null;
+                            for (int p = 0; p < descCount; p++)
+                            {
+                                string field = reader.ReadTextString();
+                                if (field == "id")
+                                    descId = reader.ReadByteString();
+                                else if (field == "type")
+                                    descType = reader.ReadTextString();
+                                else
+                                    reader.SkipValue();
+                            }
+                            // Silently drop unknown types; CTAP2 §6.2 allows unknown
+                            // "type" values to be ignored rather than rejected.
+                            if (descId != null && descType == "public-key")
+                                allowList.Add(descId);
+                        }
+                        break;
+                    }
+
+                    case 5: // options
+                    {
+                        int optCount = reader.ReadMapHeader();
+                        for (int k = 0; k < optCount; k++)
+                        {
+                            string field = reader.ReadTextString();
+                            if (field == "up")
+                                optionsUp = reader.ReadBool();
+                            else if (field == "uv")
+                                optionsUv = reader.ReadBool();
+                            else
+                                reader.SkipValue(); // rk, any future fields
+                        }
+                        break;
+                    }
+
+                    default:
+                        // extensions (4), pinUvAuthParam (6), pinUvAuthProtocol (7), and anything else: skip.
+                        reader.SkipValue();
+                        break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(rpId))
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "passkee.getAssertionRaw: missing required CTAP2 key 1 (rpId).");
+            if (clientDataHash == null)
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "passkee.getAssertionRaw: missing required CTAP2 key 2 (clientDataHash).");
+            if (!allowListSeen)
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "passkee.getAssertionRaw: missing required CTAP2 key 3 (allowList).");
+
+            return new GetAssertionRequest
+            {
+                RpId             = rpId!,
+                ClientDataHash   = clientDataHash,
+                AllowListCredIds = allowList,
+                OptionsUp        = optionsUp,
+                OptionsUv        = optionsUv,
+            };
+        }
+
+        /// <summary>
+        /// Encodes a CTAP2 authenticatorGetAssertion response per CTAP 2.1 §6.2.
+        ///
+        /// Top-level shape is INTEGER-keyed (NOT the WebAuthn L3 text-keyed shape
+        /// — webauthn.dll converts CTAP2 ↔ WebAuthn itself):
+        ///   1 = PublicKeyCredentialDescriptor (text-keyed: "id" (bstr), "type" (tstr))
+        ///   2 = authData (byte string, 37 bytes)
+        ///   3 = signature (byte string, DER-encoded ECDSA)
+        ///
+        /// Nested descriptor keys sort bytewise-lex: "id" (0x62 0x69 0x64) comes
+        /// before "type" (0x64 0x74 0x79 0x70 0x65). Omitting user/numberOfCredentials
+        /// because allowList selection is unambiguous (single match).
+        ///
+        /// Factored out so the Phase 4 hex-shape test can encode with fixed inputs —
+        /// ECDSA signatures are non-deterministic so round-tripping through the full
+        /// handler can't assert on exact bytes.
+        /// </summary>
+        internal static byte[] BuildAssertionResponse(byte[] credentialId, byte[] authData, byte[] signature)
+        {
+            byte[] EncodeUint(ulong v)   { var ww = new CborWriter(); ww.WriteUnsignedInt(v); return ww.Encode(); }
+            byte[] EncodeTstr(string s)  { var ww = new CborWriter(); ww.WriteTextString(s); return ww.Encode(); }
+            byte[] EncodeBstr(byte[] b)  { var ww = new CborWriter(); ww.WriteByteString(b); return ww.Encode(); }
+
+            // Nested credential descriptor — text keys.
+            var descriptor = new CborWriter();
+            descriptor.WriteMap(new[]
+            {
+                (EncodeTstr("id"),   EncodeBstr(credentialId)),
+                (EncodeTstr("type"), EncodeTstr("public-key")),
+            });
+            var descriptorBytes = descriptor.Encode();
+
+            var w = new CborWriter();
+            w.WriteMap(new[]
+            {
+                (EncodeUint(1), descriptorBytes),
+                (EncodeUint(2), EncodeBstr(authData)),
+                (EncodeUint(3), EncodeBstr(signature)),
+            });
+            return w.Encode();
+        }
+
+        // Internal data-transfer object for parsed CTAP2 GetAssertion input.
+        private sealed class GetAssertionRequest
+        {
+            public string       RpId             { get; set; } = string.Empty;
+            public byte[]       ClientDataHash   { get; set; } = Array.Empty<byte>();
+            public List<byte[]> AllowListCredIds { get; set; } = new List<byte[]>();
+            public bool         OptionsUp        { get; set; } = true;
+            public bool         OptionsUv        { get; set; } = false;
         }
 
         /// <summary>

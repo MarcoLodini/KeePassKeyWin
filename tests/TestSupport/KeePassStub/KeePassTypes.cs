@@ -10,6 +10,7 @@
 
 using System;
 using System.Collections.Generic;
+using KeePassLib.Interfaces;
 using KeePassLib.Security;
 
 #pragma warning disable CA1050, CS8618
@@ -36,6 +37,18 @@ namespace KeePass.Program
     {
         public bool IsOpen { get; set; }
         public KeePassLib.PwGroup RootGroup { get; set; } = new KeePassLib.PwGroup();
+
+        /// <summary>
+        /// Real KeePassLib signature: <c>bool Save(IStatusLogger sLogger)</c>.
+        /// The plugin passes <c>null</c> for non-interactive saves. The stub
+        /// flips a test-visible flag so tests can assert synchronous persistence.
+        /// </summary>
+        public int SaveCallCount { get; private set; }
+        public bool Save(IStatusLogger? sLogger)
+        {
+            SaveCallCount++;
+            return true;
+        }
     }
 }
 
@@ -61,6 +74,13 @@ namespace KeePassLib
         public PwStringDictionary Strings { get; } = new PwStringDictionary();
         public PwBinaryDictionary Binaries { get; } = new PwBinaryDictionary();
         public StringDictionaryEx CustomData { get; } = new StringDictionaryEx();
+
+        /// <summary>
+        /// Real KeePassLib signature: <c>void Touch(bool bModified, bool bTouchParents)</c>.
+        /// Bumps LastModificationTime on the entry (and parents when requested).
+        /// No-op in the stub; tests assert via the Save counter instead.
+        /// </summary>
+        public void Touch(bool bModified, bool bTouchParents) { }
     }
 
     public sealed class PwObjectList<T>
@@ -97,6 +117,17 @@ namespace KeePassLib
         public bool Exists(string key) => _d.ContainsKey(key);
         public void Remove(string key) => _d.Remove(key);
     }
+}
+
+namespace KeePassLib.Interfaces
+{
+    /// <summary>
+    /// Minimal stub of <c>KeePassLib.Interfaces.IStatusLogger</c> — the parameter
+    /// type of <c>PwDatabase.Save</c>. Plugin passes <c>null</c> for non-interactive
+    /// saves so no members are required; the type exists only to satisfy the
+    /// signature against real KeePassLib.
+    /// </summary>
+    public interface IStatusLogger { }
 }
 
 namespace KeePassLib.Security

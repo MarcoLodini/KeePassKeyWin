@@ -33,6 +33,13 @@ namespace PassKee.Plugin.Storage
 
         private readonly IPluginHost _host;
 
+        // Serialises IncrementSignCount against itself and against Add. Parallel
+        // browser login flows can land concurrent GetAssertion dispatches on the
+        // same KeePass database; WebAuthn L3 §6.1.1 requires a monotonic counter
+        // — a lost increment manifests as a replayed signCount which RPs may
+        // treat as a cloned authenticator.
+        private readonly object _lock = new object();
+
         public KeePassPasskeyStore(IPluginHost host)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
@@ -119,6 +126,54 @@ namespace PassKee.Plugin.Storage
             return false;
         }
 
+        public uint IncrementSignCount(string credentialId)
+        {
+            if (credentialId == null) throw new ArgumentNullException(nameof(credentialId));
+
+            // Lock covers find + increment + save as one atomic operation so
+            // concurrent GetAssertion dispatches produce strictly monotonic values.
+            lock (_lock)
+            {
+                var group = FindPasskeysGroup()
+                    ?? throw new KeyNotFoundException(
+                        $"Vault is closed or no Passkeys group exists; cannot increment signCount for {credentialId}.");
+
+                PwEntry? target = null;
+                for (uint i = 0; i < group.Entries.UCount; i++)
+                {
+                    var entry = group.Entries.GetAt(i);
+                    var id = entry.Strings.Get(KeyCredId)?.ReadString();
+                    if (string.Equals(id, credentialId, StringComparison.Ordinal))
+                    {
+                        target = entry;
+                        break;
+                    }
+                }
+                if (target == null)
+                    throw new KeyNotFoundException($"Credential not found: {credentialId}");
+
+                uint current = 0;
+                var raw = target.CustomData.Get(KeySignCount);
+                if (!string.IsNullOrEmpty(raw))
+                    uint.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out current);
+
+                if (current == uint.MaxValue)
+                    throw new InvalidOperationException(
+                        $"signCount overflow for credential {credentialId} (already at uint.MaxValue).");
+
+                uint next = current + 1;
+                target.CustomData.Set(KeySignCount, next.ToString(CultureInfo.InvariantCulture));
+                target.Touch(bModified: true, bTouchParents: false);
+
+                // Synchronous save: a KeePass-close-without-save would replay the
+                // old counter on next login, which RPs flag as cloned authenticator
+                // (WebAuthn L3 §6.1.1). Non-negotiable; see docs/ARCHITECTURE.md.
+                _host.Database!.Save(null);
+
+                return next;
+            }
+        }
+
         public IReadOnlyList<PasskeyRecord> GetAll()
         {
             var results = new List<PasskeyRecord>();
@@ -177,6 +232,7 @@ namespace PassKee.Plugin.Storage
                 Flags           = entry.CustomData.Get(KeyFlags) ?? string.Empty,
                 CreationTime    = DateTime.TryParse(entry.CustomData.Get(KeyCreated), null, DateTimeStyles.RoundtripKind, out var ct) ? ct : DateTime.MinValue,
                 LastUsedTime    = DateTime.TryParse(entry.CustomData.Get(KeyLastUsed), null, DateTimeStyles.RoundtripKind, out var lu) ? lu : DateTime.MinValue,
+                SignCount       = uint.TryParse(entry.CustomData.Get(KeySignCount), NumberStyles.Integer, CultureInfo.InvariantCulture, out var sc) ? sc : 0u,
             };
     }
 }

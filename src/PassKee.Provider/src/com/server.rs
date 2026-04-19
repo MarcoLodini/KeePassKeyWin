@@ -10,6 +10,83 @@
 //! This server only forwards CBOR-encoded CTAP2 requests over the IPC pipe
 //! and returns the CBOR-encoded responses. It never sees raw key material.
 
+// ── Cross-platform helpers (must live outside the #[cfg(windows)] `imp`) ──
+//
+// These are called by the Windows-only `dispatch_operation` but are kept
+// here — not gated — so Linux CI can test their parsing logic without
+// needing to cross-compile the COM server itself. Same pattern as
+// `extract_prompt_hint` (declared inside `imp` with `pub(crate)` and tested
+// from a cross-platform module at the bottom of this file).
+
+/// Owned byte / wide-string buffers extracted from a successful
+/// `passkee.makeCredentialRaw` JSON-RPC response, kept alive by the
+/// caller across the FFI call to `WebAuthNPluginAuthenticatorAddCredentials`.
+///
+/// Each `Vec<u16>` is null-terminated — suitable for direct use as
+/// `LPCWSTR`. Byte slices (`credential_id`, `user_handle`) are raw,
+/// unterminated, with length carried alongside in the FFI struct's
+/// `cb_*` fields.
+pub(crate) struct AddCredentialsFields {
+    pub credential_id: Vec<u8>,
+    pub user_handle:   Vec<u8>,
+    pub rp_id_w:       Vec<u16>,
+    pub rp_name_w:     Vec<u16>,
+    pub user_name_w:   Vec<u16>,
+    pub user_disp_w:   Vec<u16>,
+}
+
+/// Parse the six post-Phase-3 credential-detail fields out of the JSON-RPC
+/// response for `passkee.makeCredentialRaw`.
+///
+/// Returns `Err(&'static str)` naming the missing or malformed field so
+/// the caller can emit `[addcreds] skip: response missing field X` to
+/// stderr. Empty strings are materialised as a non-null null-terminator-
+/// only buffer (see `encode_utf16_nul`) — Microsoft's
+/// `PluginCredentialManager.cpp` validator treats null as invalid but
+/// accepts non-null empty strings.
+///
+/// Encoding: `credentialIdB64Url` and `userHandleB64Url` are base64url
+/// without padding (matches how the C# plugin stores both fields inside
+/// a PwEntry). Mixed with the Phase-3 legacy `cbor` field which remains
+/// base64-standard-with-padding — do not confuse the two decoders.
+pub(crate) fn parse_add_credentials_fields(
+    v: &serde_json::Value,
+) -> Result<AddCredentialsFields, &'static str> {
+    use base64::Engine;
+
+    let credential_id_b64 = v["credentialIdB64Url"].as_str().ok_or("credentialIdB64Url")?;
+    let rp_id             = v["rpId"]              .as_str().ok_or("rpId")?;
+    let rp_name           = v["rpName"]            .as_str().ok_or("rpName")?;
+    let user_handle_b64   = v["userHandleB64Url"]  .as_str().ok_or("userHandleB64Url")?;
+    let user_name         = v["userName"]          .as_str().ok_or("userName")?;
+    let user_disp         = v["userDisplayName"]   .as_str().ok_or("userDisplayName")?;
+
+    let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(credential_id_b64)
+        .map_err(|_| "credentialIdB64Url decode")?;
+    let user_handle = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(user_handle_b64)
+        .map_err(|_| "userHandleB64Url decode")?;
+
+    Ok(AddCredentialsFields {
+        credential_id,
+        user_handle,
+        rp_id_w:     encode_utf16_nul(rp_id),
+        rp_name_w:   encode_utf16_nul(rp_name),
+        user_name_w: encode_utf16_nul(user_name),
+        user_disp_w: encode_utf16_nul(user_disp),
+    })
+}
+
+/// UTF-16 encode `s` with a trailing null terminator. For empty strings
+/// the returned `Vec<u16>` is `[0]` — a single null wide char, so
+/// `as_ptr()` yields a valid, non-null `LPCWSTR` that dereferences to 0.
+/// Microsoft's `PluginCredentialManager.cpp:235-238` validates non-null
+/// but does not reject zero-length wide strings.
+fn encode_utf16_nul(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0u16)).collect()
+}
+
 #[cfg(windows)]
 pub(crate) mod imp {
     use std::sync::{Arc, Mutex};
@@ -350,6 +427,15 @@ pub(crate) mod imp {
                     .unwrap_or_default();
                 dbg_step!("response cbor {}B decoded from base64", resp_bytes.len());
 
+                // ── Phase 4 post-MakeCredential: publish credential to Windows
+                //    autofill DB via WebAuthNPluginAuthenticatorAddCredentials.
+                //    Best-effort: any failure is logged but does NOT affect the
+                //    MakeCredential response returned to webauthn.dll. Without
+                //    this call, credentials still register at the RP but the
+                //    Windows picker on a later GetAssertion would show "no
+                //    passkeys found". See `try_add_credentials` for details.
+                try_add_credentials(method, &v);
+
                 let buf = unsafe { CoTaskMemAlloc(resp_bytes.len()) as *mut u8 };
                 if buf.is_null() {
                     dbg_step!("CoTaskMemAlloc FAILED");
@@ -366,7 +452,95 @@ pub(crate) mod imp {
             Err(ref e @ ClientError::VaultLocked)         => { dbg_step!("RPC err: {e:?} -> E_ACCESSDENIED"); HRESULT(0x8007_0005u32 as i32) }
             Err(ref e @ ClientError::UnsupportedAlgorithm) => { dbg_step!("RPC err: {e:?} -> E_INVALIDARG");  HRESULT(E_INVALIDARG as i32) }
             Err(ref e @ ClientError::CredentialExcluded)   => { dbg_step!("RPC err: {e:?} -> E_CREDENTIAL_EXCLUDED"); HRESULT(E_CREDENTIAL_EXCLUDED as i32) }
+            Err(ClientError::NoCredentials)                => { dbg_step!("GetAssertion -> NoCredentials (possibly empty allowList - MVP punt) -> NTE_NOT_FOUND"); HRESULT(0x8009_0011u32 as i32) }
             Err(ref e)                                     => { dbg_step!("RPC err: {e:?} -> E_FAIL"); HRESULT(E_FAIL as i32) }
+        }
+    }
+
+    /// Post-MakeCredential hook: best-effort publish of the newly created
+    /// credential's metadata to Windows' shared autofill / picker database
+    /// via `WebAuthNPluginAuthenticatorAddCredentials`.
+    ///
+    /// Skipped for any method other than `passkee.makeCredentialRaw`, any
+    /// response missing one of the six credential-detail fields, and any
+    /// target where the FFI is unavailable. Every failure is logged with
+    /// the `[addcreds]` breadcrumb prefix to stderr; NONE change the
+    /// caller's return path — the MakeCredential response is still sent
+    /// to webauthn.dll and attestation verification at the RP still
+    /// succeeds. Only the follow-on login via the Windows picker is
+    /// affected by a failure here.
+    fn try_add_credentials(method: &str, v: &serde_json::Value) {
+        use std::io::Write;
+
+        macro_rules! breadcrumb { ($($arg:tt)*) => {{
+            eprintln!("[addcreds] {}", format_args!($($arg)*));
+            let _ = std::io::stderr().flush();
+        }} }
+
+        if method != "passkee.makeCredentialRaw" {
+            breadcrumb!("skip: not makeCredential (method={method})");
+            return;
+        }
+
+        let fields = match crate::com::server::parse_add_credentials_fields(v) {
+            Ok(f) => f,
+            Err(field) => {
+                breadcrumb!("skip: response missing field {field}");
+                return;
+            }
+        };
+
+        use crate::com::types::WebauthnPluginCredentialDetails;
+        let details = WebauthnPluginCredentialDetails {
+            cb_credential_id:       fields.credential_id.len() as u32,
+            pb_credential_id:       fields.credential_id.as_ptr(),
+            pwsz_rp_id:             fields.rp_id_w.as_ptr(),
+            pwsz_rp_name:           fields.rp_name_w.as_ptr(),
+            cb_user_id:             fields.user_handle.len() as u32,
+            pb_user_id:             fields.user_handle.as_ptr(),
+            pwsz_user_name:         fields.user_name_w.as_ptr(),
+            pwsz_user_display_name: fields.user_disp_w.as_ptr(),
+        };
+
+        // Stringify rp_id / user_name back from the UTF-16 buffers for the
+        // breadcrumb — the source &str is already gone by the time the
+        // field buffers are owned, and re-walking the Vec<u16> is cheap.
+        let rp_id_log:   String = String::from_utf16_lossy(strip_nul(&fields.rp_id_w));
+        let user_log:    String = String::from_utf16_lossy(strip_nul(&fields.user_name_w));
+
+        breadcrumb!(
+            "calling AddCredentials credId_len={} rpId={rp_id_log} user={user_log}",
+            fields.credential_id.len()
+        );
+
+        // REFCLSID = pointer-to-GUID. &CLSID_GUID as *const _ — NOT inline
+        // bytes (same ABI shape as the register call; different trap would
+        // crash immediately).
+        let rclsid_ptr = &crate::com::exe_server::CLSID_GUID as *const _;
+        match crate::com::webauthnplugin_ext::add_credentials(rclsid_ptr, std::slice::from_ref(&details)) {
+            Err(err) => {
+                breadcrumb!("skip: FFI not available: {err}");
+            }
+            Ok(hr) => {
+                breadcrumb!("AddCredentials returned hr=0x{:08x}", hr.0 as u32);
+                if hr.0 == 0 {
+                    breadcrumb!("AddCredentials succeeded — Windows picker should now see this credential");
+                }
+            }
+        }
+
+        // `details` and all its backing Vecs (held in `fields`) drop here.
+        // The runtime copied whatever it needed during the call, so freeing
+        // the buffers now is safe.
+        drop(fields);
+    }
+
+    /// Strip the trailing null terminator from a UTF-16 buffer so
+    /// `String::from_utf16_lossy` does not render a U+0000 at the end.
+    fn strip_nul(w: &[u16]) -> &[u16] {
+        match w.last() {
+            Some(0) => &w[..w.len() - 1],
+            _       => w,
         }
     }
 
@@ -495,6 +669,7 @@ impl From<crate::com::types::Guid> for windows::core::GUID {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_add_credentials_fields;
     use crate::com::types::*;
 
     #[test]
@@ -514,5 +689,127 @@ mod tests {
     #[test]
     fn request_type_cbor_value() {
         assert_eq!(WebauthNPluginRequestType::Ctap2Cbor as u32, 1);
+    }
+
+    // ── Phase 4: parse_add_credentials_fields ─────────────────────────────
+
+    /// Helper: base64url-no-pad encode a byte slice. Used to construct
+    /// plausible JSON payloads matching the locked wire contract.
+    fn b64url(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_happy_path() {
+        let cred_id = b"\x01\x02\x03\x04\x05";
+        let user_id = b"\xaa\xbb\xcc";
+        let v = serde_json::json!({
+            "cbor": "ignored",
+            "credentialIdB64Url": b64url(cred_id),
+            "rpId": "example.com",
+            "rpName": "Example Site",
+            "userHandleB64Url": b64url(user_id),
+            "userName": "alice",
+            "userDisplayName": "Alice Smith",
+        });
+
+        let fields = parse_add_credentials_fields(&v)
+            .expect("all six fields present — must decode");
+
+        assert_eq!(fields.credential_id, cred_id.to_vec());
+        assert_eq!(fields.user_handle,   user_id.to_vec());
+
+        // Wide strings are null-terminated — compare via from_utf16 after
+        // stripping the final zero.
+        assert_eq!(fields.rp_id_w.last(),     Some(&0));
+        assert_eq!(fields.rp_name_w.last(),   Some(&0));
+        assert_eq!(fields.user_name_w.last(), Some(&0));
+        assert_eq!(fields.user_disp_w.last(), Some(&0));
+
+        let rp_id = String::from_utf16(&fields.rp_id_w[..fields.rp_id_w.len() - 1]).unwrap();
+        assert_eq!(rp_id, "example.com");
+        let rp_name = String::from_utf16(&fields.rp_name_w[..fields.rp_name_w.len() - 1]).unwrap();
+        assert_eq!(rp_name, "Example Site");
+    }
+
+    /// Convenience: run the parser and assert the error path fires with
+    /// the given field name. Using a helper keeps each test short and
+    /// avoids coupling the test to the (non-PartialEq) success struct.
+    fn expect_err(v: &serde_json::Value, expected: &str) {
+        match parse_add_credentials_fields(v) {
+            Err(got) => assert_eq!(got, expected, "wrong skip-field name"),
+            Ok(_)    => panic!("expected Err({expected:?}) but parse succeeded"),
+        }
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_missing_credential_id() {
+        let v = serde_json::json!({
+            "rpId": "example.com",
+            "rpName": "Example",
+            "userHandleB64Url": b64url(b"x"),
+            "userName": "alice",
+            "userDisplayName": "Alice",
+        });
+        expect_err(&v, "credentialIdB64Url");
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_missing_rp_id() {
+        let v = serde_json::json!({
+            "credentialIdB64Url": b64url(b"x"),
+            "rpName": "Example",
+            "userHandleB64Url": b64url(b"x"),
+            "userName": "alice",
+            "userDisplayName": "Alice",
+        });
+        expect_err(&v, "rpId");
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_missing_user_display_name() {
+        let v = serde_json::json!({
+            "credentialIdB64Url": b64url(b"x"),
+            "rpId": "example.com",
+            "rpName": "Example",
+            "userHandleB64Url": b64url(b"x"),
+            "userName": "alice",
+        });
+        expect_err(&v, "userDisplayName");
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_bad_base64() {
+        // Padded standard base64 is NOT valid URL-safe-no-pad — decode fails.
+        let v = serde_json::json!({
+            "credentialIdB64Url": "AAAA==",   // padded '=' invalid for NO_PAD
+            "rpId": "example.com",
+            "rpName": "Example",
+            "userHandleB64Url": b64url(b"x"),
+            "userName": "alice",
+            "userDisplayName": "Alice",
+        });
+        expect_err(&v, "credentialIdB64Url decode");
+    }
+
+    #[test]
+    fn parse_add_credentials_fields_empty_strings_ok() {
+        // Microsoft's PluginCredentialManager.cpp validator rejects null
+        // but accepts empty strings. Our parser must forward them as
+        // non-null null-terminator-only UTF-16 buffers.
+        let v = serde_json::json!({
+            "credentialIdB64Url": b64url(b"x"),
+            "rpId": "",
+            "rpName": "",
+            "userHandleB64Url": b64url(b"x"),
+            "userName": "",
+            "userDisplayName": "",
+        });
+        let fields = parse_add_credentials_fields(&v).expect("empty strings must parse");
+        assert_eq!(fields.rp_id_w,     vec![0u16]);
+        assert_eq!(fields.rp_name_w,   vec![0u16]);
+        assert_eq!(fields.user_name_w, vec![0u16]);
+        assert_eq!(fields.user_disp_w, vec![0u16]);
     }
 }

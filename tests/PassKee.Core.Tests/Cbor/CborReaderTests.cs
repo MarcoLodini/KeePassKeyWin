@@ -355,6 +355,42 @@ namespace PassKee.Core.Tests.Cbor
             Assert.True(reader.IsAtEnd);
         }
 
+        // ── ReadBool (for CTAP2 §6.2 options map) ─────────────────────────────
+
+        [Fact]
+        public void ReadBool_True_Returns_0xF5()
+        {
+            var reader = new CborReader(new byte[] { 0xF5 });
+            Assert.True(reader.ReadBool());
+            Assert.True(reader.IsAtEnd);
+        }
+
+        [Fact]
+        public void ReadBool_False_Returns_0xF4()
+        {
+            var reader = new CborReader(new byte[] { 0xF4 });
+            Assert.False(reader.ReadBool());
+            Assert.True(reader.IsAtEnd);
+        }
+
+        [Theory]
+        [InlineData(0x00)] // uint 0 (MT0)
+        [InlineData(0xF6)] // null — simple value but not a bool
+        [InlineData(0xF7)] // undefined — simple value but not a bool
+        [InlineData(0x01)] // uint 1
+        public void ReadBool_NonBool_Throws(byte b)
+        {
+            var reader = new CborReader(new byte[] { b });
+            Assert.Throws<CborReaderException>(() => reader.ReadBool());
+        }
+
+        [Fact]
+        public void ReadBool_EmptyBuffer_Throws()
+        {
+            var reader = new CborReader(Array.Empty<byte>());
+            Assert.Throws<CborReaderException>(() => reader.ReadBool());
+        }
+
         [Fact]
         public void LengthBomb_ByteStringClaiming2Gb_Throws()
         {

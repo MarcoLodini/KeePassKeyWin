@@ -228,6 +228,56 @@ pub struct WebauthnPluginUserVerificationRequest {
 unsafe impl Send for WebauthnPluginUserVerificationRequest {}
 unsafe impl Sync for WebauthnPluginUserVerificationRequest {}
 
+/// Maps to `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` as declared in
+/// `webauthnplugin.h` from Windows SDK 10.0.26100.0 (lines 242-270 of the
+/// header extracted from the `Microsoft.Windows.SDK.CPP` NuGet package).
+///
+/// Passed to `WebAuthNPluginAuthenticatorAddCredentials` (and the related
+/// Remove / GetAll functions — not exercised in Phase 4) to publish
+/// credential metadata into Windows' shared autofill / picker database.
+/// Without this call, a credential registered via MakeCredential remains
+/// invisible to the OS passkey picker and a subsequent login flow shows
+/// "no passkeys found" even though our plugin has the record.
+///
+/// All 6 byte/string fields are marked "required" by the header comments
+/// ("This field is required.") and are validated non-null by Microsoft's
+/// own `PluginCredentialManager.cpp` sample (lines 235-238 of the
+/// `PasskeyManager` reference sample under `Windows-classic-samples`).
+/// The caller owns every pointed-to buffer — there is no matching Free
+/// function for Add (unlike the Get path which exposes
+/// `WebAuthNPluginAuthenticatorFreeCredentialDetailsArray`).
+///
+/// x64 layout (64 bytes total):
+///   offset  0: cb_credential_id       (DWORD, 4)
+///   [4 bytes padding for pointer alignment]
+///   offset  8: pb_credential_id       (const BYTE*, 8)
+///   offset 16: pwsz_rp_id             (LPCWSTR, 8)
+///   offset 24: pwsz_rp_name           (LPCWSTR, 8)
+///   offset 32: cb_user_id             (DWORD, 4)
+///   [4 bytes padding for pointer alignment]
+///   offset 40: pb_user_id             (const BYTE*, 8)
+///   offset 48: pwsz_user_name         (LPCWSTR, 8)
+///   offset 56: pwsz_user_display_name (LPCWSTR, 8)
+///   total:     64 bytes
+///
+/// No GUID fields in this struct, so no inline-vs-REFGUID trap.
+/// `WebAuthNPluginAuthenticatorAddCredentials`'s `rclsid` parameter itself
+/// is `REFCLSID` (pointer, 8 bytes) — same as the register path.
+#[repr(C)]
+pub struct WebauthnPluginCredentialDetails {
+    pub cb_credential_id:       u32,
+    pub pb_credential_id:       *const u8,
+    pub pwsz_rp_id:             *const u16,
+    pub pwsz_rp_name:           *const u16,
+    pub cb_user_id:             u32,
+    pub pb_user_id:             *const u8,
+    pub pwsz_user_name:         *const u16,
+    pub pwsz_user_display_name: *const u16,
+}
+
+unsafe impl Send for WebauthnPluginCredentialDetails {}
+unsafe impl Sync for WebauthnPluginCredentialDetails {}
+
 // ── ABI size assertions ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -372,6 +422,41 @@ mod abi_tests {
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, p_transaction_id), 8);
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_username),    16);
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_display_hint), 24);
+        }
+    }
+
+    #[test]
+    fn credential_details_size() {
+        // Authoritative shape from SDK 10.0.26100.0 webauthnplugin.h lines 242-270:
+        //   x64: DWORD(4)+pad(4) + ptr(8) + ptr(8) + ptr(8) + DWORD(4)+pad(4)
+        //        + ptr(8) + ptr(8) + ptr(8) = 64 bytes
+        //   x86: DWORD(4) + ptr(4) + ptr(4) + ptr(4) + DWORD(4)
+        //        + ptr(4) + ptr(4) + ptr(4) = 32 bytes
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthnPluginCredentialDetails>(), 64);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginCredentialDetails>(), 32);
+
+        // Alignment: largest member is a pointer, so alignment equals
+        // pointer size on the target.
+        assert_eq!(
+            std::mem::align_of::<WebauthnPluginCredentialDetails>(),
+            std::mem::align_of::<*const u8>()
+        );
+    }
+
+    #[test]
+    fn credential_details_field_offsets() {
+        assert_eq!(offset_of!(WebauthnPluginCredentialDetails, cb_credential_id), 0);
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pb_credential_id),       8);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pwsz_rp_id),             16);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pwsz_rp_name),           24);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, cb_user_id),             32);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pb_user_id),             40);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pwsz_user_name),         48);
+            assert_eq!(offset_of!(WebauthnPluginCredentialDetails, pwsz_user_display_name), 56);
         }
     }
 }

@@ -298,5 +298,59 @@ namespace PassKee.Core.Tests.Storage
             var store = new KeePassPasskeyStore(new FakePluginHost(dbOpen: false));
             Assert.Empty(store.GetAll());
         }
+
+        // --- IncrementSignCount (Phase 4) ---
+
+        [Fact]
+        public void IncrementSignCount_FirstCall_ReturnsOne_AndPersists()
+        {
+            var host = new FakePluginHost(dbOpen: true);
+            var store = new KeePassPasskeyStore(host);
+            store.Add(MakeRecord("cred-inc"));
+
+            // Replay landmine canary: Save MUST be called synchronously so the
+            // new counter survives a KeePass close-without-save.
+            Assert.Equal(0, host.Database!.SaveCallCount);
+            uint next = store.IncrementSignCount("cred-inc");
+            Assert.Equal(1u, next);
+            Assert.Equal(1, host.Database!.SaveCallCount);
+
+            var found = store.FindById("cred-inc")!;
+            Assert.Equal(1u, found.SignCount);
+        }
+
+        [Fact]
+        public void IncrementSignCount_Monotonic()
+        {
+            var host = new FakePluginHost(dbOpen: true);
+            var store = new KeePassPasskeyStore(host);
+            store.Add(MakeRecord("cred-inc"));
+
+            Assert.Equal(1u, store.IncrementSignCount("cred-inc"));
+            Assert.Equal(2u, store.IncrementSignCount("cred-inc"));
+            Assert.Equal(3u, store.IncrementSignCount("cred-inc"));
+            Assert.Equal(3, host.Database!.SaveCallCount);
+        }
+
+        [Fact]
+        public void IncrementSignCount_UnknownCredential_Throws()
+        {
+            var store = new KeePassPasskeyStore(new FakePluginHost(dbOpen: true));
+            Assert.Throws<System.Collections.Generic.KeyNotFoundException>(() =>
+                store.IncrementSignCount("nope"));
+        }
+
+        [Fact]
+        public void FindById_AfterIncrement_CarriesSignCountThroughEntryToRecord()
+        {
+            var store = new KeePassPasskeyStore(new FakePluginHost(dbOpen: true));
+            store.Add(MakeRecord("cred-inc"));
+            store.IncrementSignCount("cred-inc");
+            store.IncrementSignCount("cred-inc");
+
+            var record = store.FindById("cred-inc");
+            Assert.NotNull(record);
+            Assert.Equal(2u, record!.SignCount);
+        }
     }
 }

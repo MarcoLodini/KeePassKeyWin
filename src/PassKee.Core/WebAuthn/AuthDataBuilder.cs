@@ -62,8 +62,11 @@ namespace PassKee.Core.WebAuthn
 
         /// <summary>
         /// Builds authenticatorData for a GetAssertion response (no attested credential data).
+        /// <paramref name="signCount"/> is the monotonically-incremented use counter
+        /// written big-endian at bytes [33..37]. Relying parties detect cloned
+        /// authenticators by watching this counter regress (WebAuthn L3 §6.1.1).
         /// </summary>
-        public static byte[] BuildAssertion(string rpId, bool userVerified)
+        public static byte[] BuildAssertion(string rpId, bool userVerified, uint signCount = 0)
         {
             if (rpId == null) throw new ArgumentNullException(nameof(rpId));
 
@@ -75,7 +78,7 @@ namespace PassKee.Core.WebAuthn
             using var ms = new MemoryStream(37);
             ms.Write(rpIdHash, 0, 32);
             ms.WriteByte(flags);
-            WriteUint32Be(ms, 0);
+            WriteUint32Be(ms, signCount);
             return ms.ToArray();
         }
 
