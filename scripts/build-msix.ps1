@@ -1,21 +1,21 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Stage and pack PassKee.Provider into an MSIX package using makeappx.
+    Stage and pack KeePassKeyWin.Provider into an MSIX package using makeappx.
 
 .DESCRIPTION
     Purpose     : Assert that the Rust build outputs exist, stage them alongside
                   the MSIX manifest and Assets, then invoke makeappx to produce
-                  out\PassKee.Provider.msix.
+                  out\KeePassKeyWin.Provider.msix.
     Prerequisites: cargo xwin build --target x86_64-pc-windows-msvc --release must
                   have been run beforehand (WSL2 or native-Windows).
                   Windows SDK makeappx.exe must be reachable (via PATH or the
                   standard Windows Kits installation).
-    Inputs      : -RustArtifactDir (optional) — source directory for passkee-provider.exe.
+    Inputs      : -RustArtifactDir (optional) — source directory for keepasskeywin-provider.exe.
                    Defaults to the repo-local release path. If you build on WSL and
                    validate on Windows, pass the UNC path, e.g.:
                      -RustArtifactDir '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
-    Outputs     : out\PassKee.Provider.msix
+    Outputs     : out\KeePassKeyWin.Provider.msix
     Exit codes  : 0 = PASS, 1 = FAIL
 
     Reference: https://learn.microsoft.com/windows/msix/package/create-app-package-with-makeappx-tool
@@ -40,11 +40,11 @@ Write-Host ''
 Write-Host '[build-msix] --- Step 1/5: Assert Rust build outputs ---'
 
 if ([string]::IsNullOrEmpty($RustArtifactDir)) {
-    $releaseDir = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+    $releaseDir = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\target\x86_64-pc-windows-msvc\release'
 } else {
     $releaseDir = $RustArtifactDir
 }
-$providerExe = Join-Path $releaseDir 'passkee-provider.exe'
+$providerExe = Join-Path $releaseDir 'keepasskeywin-provider.exe'
 
 Write-Host "[build-msix] Rust artifact dir: $releaseDir"
 
@@ -66,7 +66,7 @@ foreach ($required in @($providerExe)) {
 Write-Host ''
 Write-Host '[build-msix] --- Step 2/5: Assert Assets ---'
 
-$assetsDir = Join-Path $repoRoot 'src\PassKee.Provider\appx\Assets'
+$assetsDir = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\appx\Assets'
 # Parentheses are required: on PS 6+ `Join-Path` has `-AdditionalChildPath`,
 # so a bare `Join-Path a b, c, d` binds the commas to the first call as an
 # array argument instead of producing three separate array elements.
@@ -79,13 +79,13 @@ $requiredAssets = @(
 foreach ($asset in $requiredAssets) {
     if (-not (Test-Path $asset)) {
         Write-Host "[build-msix] FAIL: Required asset not found: $asset" -ForegroundColor Red
-        Write-Host "[build-msix]   Commit the placeholder PNGs under src\PassKee.Provider\appx\Assets\" -ForegroundColor Yellow
+        Write-Host "[build-msix]   Commit the placeholder PNGs under src\KeePassKeyWin.Provider\appx\Assets\" -ForegroundColor Yellow
         exit 1
     }
     Write-Host "[build-msix] Found asset: $([System.IO.Path]::GetFileName($asset))"
 }
 
-$manifestSrc = Join-Path $repoRoot 'src\PassKee.Provider\appx\Package.appxmanifest'
+$manifestSrc = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\appx\Package.appxmanifest'
 if (-not (Test-Path $manifestSrc)) {
     Write-Host "[build-msix] FAIL: Manifest not found: $manifestSrc" -ForegroundColor Red
     exit 1
@@ -109,7 +109,7 @@ if (-not (Test-Path $outDir)) {
 }
 
 $stagingGuid = [System.Guid]::NewGuid().ToString('N')
-$stagingDir  = Join-Path ([System.IO.Path]::GetTempPath()) "passkee-msix-staging-$stagingGuid"
+$stagingDir  = Join-Path ([System.IO.Path]::GetTempPath()) "keepasskeywin-msix-staging-$stagingGuid"
 New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stagingDir 'Assets') -Force | Out-Null
 Write-Host "[build-msix] Staging directory: $stagingDir"
@@ -124,8 +124,8 @@ Write-Host "[build-msix] Staging directory: $stagingDir"
 Copy-Item $manifestSrc (Join-Path $stagingDir 'AppxManifest.xml') -Force
 Write-Host "[build-msix] Staged: AppxManifest.xml (renamed from Package.appxmanifest)"
 
-Copy-Item $providerExe (Join-Path $stagingDir 'passkee-provider.exe') -Force
-Write-Host "[build-msix] Staged: passkee-provider.exe"
+Copy-Item $providerExe (Join-Path $stagingDir 'keepasskeywin-provider.exe') -Force
+Write-Host "[build-msix] Staged: keepasskeywin-provider.exe"
 
 foreach ($asset in $requiredAssets) {
     $dest = Join-Path $stagingDir "Assets\$([System.IO.Path]::GetFileName($asset))"
@@ -182,7 +182,7 @@ if ($null -eq $makeappx -or -not (Test-Path $makeappx)) {
 Write-Host ''
 Write-Host '[build-msix] --- Step 5/5: Pack ---'
 
-$msixOut = Join-Path $outDir 'PassKee.Provider.msix'
+$msixOut = Join-Path $outDir 'KeePassKeyWin.Provider.msix'
 
 & $makeappx pack /v /o /d $stagingDir /p $msixOut
 $makeappxExit = $LASTEXITCODE
@@ -203,5 +203,5 @@ if (-not (Test-Path $msixOut)) {
 
 $msixSize = (Get-Item $msixOut).Length
 Write-Host ''
-Write-Host "[build-msix] PASS out\PassKee.Provider.msix $msixSize bytes" -ForegroundColor Green
+Write-Host "[build-msix] PASS out\KeePassKeyWin.Provider.msix $msixSize bytes" -ForegroundColor Green
 exit 0

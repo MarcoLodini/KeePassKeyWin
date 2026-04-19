@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Unattended end-to-end validation of PassKee Phase 2.1 (MSIX packaging + sideload).
+    Unattended end-to-end validation of KeePassKeyWin Phase 2.1 (MSIX packaging + sideload).
 
 .DESCRIPTION
     Purpose     : Orchestrate the full Phase 2.1 pipeline:
@@ -12,15 +12,15 @@
                     5. Install and verify the MSIX package.
     Prerequisites:
                   - cargo xwin build --target x86_64-pc-windows-msvc --release must
-                    already have been run (produces passkee-provider.exe).
+                    already have been run (produces keepasskeywin-provider.exe).
                   - Must be run from an elevated (administrator) PowerShell session so
                     ensure-dev-cert.ps1 can install the cert into LocalMachine\TrustedPeople.
                   - Windows SDK (makeappx.exe + signtool.exe) installed.
     Inputs      : -PfxPassword (SecureString; if omitted, prompted once at Step 1 and
                    reused for Steps 3 and 4 automatically — no repeated prompts).
-                  -PfxPath (default: out\PassKee.Dev.pfx)
-                  -MsixPath (default: out\PassKee.Provider.msix)
-                  -RustArtifactDir — override location of passkee-provider.exe. Use the
+                  -PfxPath (default: out\KeePassKeyWin.Dev.pfx)
+                  -MsixPath (default: out\KeePassKeyWin.Provider.msix)
+                  -RustArtifactDir — override location of keepasskeywin-provider.exe. Use the
                    WSL UNC path if cross-compiling from WSL2:
                      '\\wsl.localhost\Ubuntu\home\<you>\...\target\x86_64-pc-windows-msvc\release'
                   -DryRun — pre-flight only; skips all build/sign/install steps.
@@ -30,7 +30,7 @@
     Phase 2.2 handshake: on PASS, PackageFamilyName is logged prominently by
     install-msix.ps1 (Step 5/5). Record it for the next session.
 
-    Rollback: Remove-AppxPackage (Get-AppxPackage -Name 'PassKee.Provider').PackageFullName
+    Rollback: Remove-AppxPackage (Get-AppxPackage -Name 'KeePassKeyWin.Provider').PackageFullName
 
 .EXAMPLE
     # Elevated PowerShell — runs the full pipeline, prompts for PFX password once:
@@ -62,13 +62,13 @@ $repoRoot  = Split-Path -Parent $PSScriptRoot
 $scriptsDir = $PSScriptRoot
 
 if ([string]::IsNullOrEmpty($PfxPath)) {
-    $PfxPath = Join-Path $repoRoot 'out\PassKee.Dev.pfx'
+    $PfxPath = Join-Path $repoRoot 'out\KeePassKeyWin.Dev.pfx'
 } elseif (-not [System.IO.Path]::IsPathRooted($PfxPath)) {
     $PfxPath = Join-Path $repoRoot $PfxPath
 }
 
 if ([string]::IsNullOrEmpty($MsixPath)) {
-    $MsixPath = Join-Path $repoRoot 'out\PassKee.Provider.msix'
+    $MsixPath = Join-Path $repoRoot 'out\KeePassKeyWin.Provider.msix'
 } elseif (-not [System.IO.Path]::IsPathRooted($MsixPath)) {
     $MsixPath = Join-Path $repoRoot $MsixPath
 }
@@ -105,7 +105,7 @@ function Invoke-Step {
 # Banner
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host "[validate-phase2] ===== PassKee Phase 2.1 Validator =====" -ForegroundColor Cyan
+Write-Host "[validate-phase2] ===== KeePassKeyWin Phase 2.1 Validator =====" -ForegroundColor Cyan
 Write-Host "[validate-phase2] Repo root : $repoRoot"
 Write-Host "[validate-phase2] PfxPath   : $PfxPath"
 Write-Host "[validate-phase2] MsixPath  : $MsixPath"
@@ -119,12 +119,12 @@ Write-Host '[validate-phase2] --- Pre-flight checks ---'
 
 # Check that the Rust release outputs exist — without them nothing else works.
 if ([string]::IsNullOrEmpty($RustArtifactDir)) {
-    $releaseDir = Join-Path $repoRoot 'src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+    $releaseDir = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\target\x86_64-pc-windows-msvc\release'
 } else {
     $releaseDir = $RustArtifactDir
 }
-$providerExe = Join-Path $releaseDir 'passkee-provider.exe'
-$manifestFile = Join-Path $repoRoot 'src\PassKee.Provider\appx\Package.appxmanifest'
+$providerExe = Join-Path $releaseDir 'keepasskeywin-provider.exe'
+$manifestFile = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\appx\Package.appxmanifest'
 
 Write-Host "[validate-phase2] Rust artifact dir: $releaseDir"
 

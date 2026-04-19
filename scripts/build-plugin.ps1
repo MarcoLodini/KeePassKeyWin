@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds PassKee.Plugin (net48) and copies it into the KeePass Plugins directory.
+    Builds KeePassKeyWin.Plugin (net48) and copies it into the KeePass Plugins directory.
 
 .PARAMETER KeePassDir
     Path to the KeePass 2.x installation directory.
@@ -64,25 +64,25 @@ $machineStr = switch ($machineId) {
     default { "unknown (0x{0:X4})" -f $machineId }
 }
 Write-Host "[build-plugin] KeePass.exe architecture: $machineStr"
-# PassKee.dll is AnyCPU so it adapts — no hard block, just information.
+# KeePassKeyWin.dll is AnyCPU so it adapts — no hard block, just information.
 
 # --- Build ---
-$pluginCsproj = Join-Path $repoRoot "src\PassKee.Plugin\PassKee.Plugin.csproj"
+$pluginCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Plugin\KeePassKeyWin.Plugin.csproj"
 if (-not (Test-Path $pluginCsproj)) {
     throw "Project file not found: '$pluginCsproj'. Run this script from the repo root or a scripts\ subdirectory."
 }
 
 # Split Core and Plugin into separate `dotnet build` invocations to avoid the
 # \\wsl.localhost SMB/9P cache race that surfaces as CS0006 "Metadata file
-# 'PassKee.Core.dll' could not be found" when both projects build in one
+# 'KeePassKeyWin.Core.dll' could not be found" when both projects build in one
 # MSBuild process on a WSL2 repo. Cross-process + Test-Path poll gives the
 # SMB layer time to surface the Core DLL before the Plugin consumes it.
-$passKeeCoreCsproj = Join-Path $repoRoot "src\PassKee.Core\PassKee.Core.csproj"
-$passKeeCoreDll    = Join-Path $repoRoot "src\PassKee.Core\bin\$Configuration\net48\PassKee.Core.dll"
+$passKeeCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
+$passKeeCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\$Configuration\net48\KeePassKeyWin.Core.dll"
 
-Write-Host "[build-plugin] Building PassKee.Core ($Configuration, net48)..."
+Write-Host "[build-plugin] Building KeePassKeyWin.Core ($Configuration, net48)..."
 & dotnet build $passKeeCoreCsproj -f net48 -c $Configuration --nologo
-if ($LASTEXITCODE -ne 0) { throw "PassKee.Core build failed (exit $LASTEXITCODE)." }
+if ($LASTEXITCODE -ne 0) { throw "KeePassKeyWin.Core build failed (exit $LASTEXITCODE)." }
 
 $coreDllDeadline = (Get-Date).AddSeconds(15)
 while ((Get-Date) -lt $coreDllDeadline) {
@@ -90,10 +90,10 @@ while ((Get-Date) -lt $coreDllDeadline) {
     Start-Sleep -Milliseconds 200
 }
 if (-not (Test-Path $passKeeCoreDll)) {
-    throw "PassKee.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows FS sync stall)."
+    throw "KeePassKeyWin.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows FS sync stall)."
 }
 
-Write-Host "[build-plugin] Building PassKee.Plugin ($Configuration, net48)..."
+Write-Host "[build-plugin] Building KeePassKeyWin.Plugin ($Configuration, net48)..."
 $buildArgs = @(
     "build", $pluginCsproj,
     "-f", "net48",
@@ -106,13 +106,13 @@ $buildArgs = @(
 if ($LASTEXITCODE -ne 0) { throw "dotnet build failed (exit $LASTEXITCODE)." }
 
 # --- Collect outputs ---
-$srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\$Configuration\net48"
+$srcDir = Join-Path $repoRoot "src\KeePassKeyWin.Plugin\bin\$Configuration\net48"
 
 # Purge any stale KeePass.dll/pdb stub left behind by an earlier Linux build.
 # Modern builds have <Private>false</Private> on the KeePassStub ProjectReference
 # so new builds won't emit a stub, but a stub file from a previous build can
 # linger in the output directory and get copied into Plugins\, where it
-# satisfies PassKee.dll's weak-named KeePass reference instead of the running
+# satisfies KeePassKeyWin.dll's weak-named KeePass reference instead of the running
 # KeePass.exe — making IsSubclassOf(Plugin) return false and silently
 # preventing plugin load. Purge defensively.
 foreach ($stale in @("KeePass.dll", "KeePass.pdb")) {
@@ -123,8 +123,8 @@ foreach ($stale in @("KeePass.dll", "KeePass.pdb")) {
     }
 }
 
-# Copy every DLL from the plugin build output. PassKee.dll depends on
-# PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's polyfill family
+# Copy every DLL from the plugin build output. KeePassKeyWin.dll depends on
+# KeePassKeyWin.Core.dll, Newtonsoft.Json.dll, and System.Memory's polyfill family
 # (System.Buffers, System.Numerics.Vectors, System.Runtime.CompilerServices.Unsafe);
 # missing any of them makes KeePass silently reject the plugin at load time.
 # Explicitly exclude KeePass.dll as a second safeguard.

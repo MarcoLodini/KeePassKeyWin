@@ -1,0 +1,282 @@
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using KeePassKeyWin.Harness;
+using KeePassKeyWin.Harness.Cdp;
+using KeePassKeyWin.Harness.Pipe;
+
+/// <summary>
+/// KeePassKeyWin Phase 0.5 harness.
+///
+/// Prerequisites:
+///   1. KeePass is running with a .kdbx open and the KeePassKeyWin plugin loaded.
+///   2. Chrome (or Edge) is running with:
+///        --remote-debugging-port=9222
+///      (Not required in --smoke mode; pipe-only operations are used.)
+///   3. The HKCU handshake nonce has been written by the plugin to
+///        HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce
+///      (the plugin writes this on Initialize(); read it from the registry or
+///       pass it via --nonce on the command line).
+///
+/// Usage:
+///   KeePassKeyWin.Harness [--port 9222] [--pipe KeePassKeyWin.1] [--nonce &lt;hex&gt;] [--rp example.com]
+///
+/// Modes:
+///   (default) Interactive: connects, handshakes, then prints a menu.
+///   --smoke   Smoke test: createPasskey then listCredentials then signAssertion, print PASS/FAIL.
+///             In --smoke mode Chrome/CDP is not required.
+/// </summary>
+
+var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+// --- Parse args ---
+int cdpPort  = 9222;
+string? nonce = null;
+string rpId   = "webauthn.io";
+string rpName = "WebAuthn.io";
+bool smokeTest = false;
+
+for (int i = 0; i < args.Length; i++)
+{
+    switch (args[i])
+    {
+        case "--port"  when i + 1 < args.Length: cdpPort  = int.Parse(args[++i]); break;
+        case "--nonce" when i + 1 < args.Length: nonce    = args[++i]; break;
+        case "--rp"    when i + 1 < args.Length: rpId     = args[++i]; break;
+        case "--smoke": smokeTest = true; break;
+    }
+}
+
+// --- Derive pipe name ---
+// The plugin names the pipe KeePassKeyWin.<sessionId>. On Windows the session ID matches
+// the current process. For testing we default to session 1 (typical interactive session).
+var sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+var pipeName  = $"KeePassKeyWin.{sessionId}";
+
+Console.WriteLine($"[Harness] Pipe: {pipeName}");
+if (!smokeTest)
+    Console.WriteLine($"[Harness] CDP: localhost:{cdpPort}");
+
+// --- Resolve nonce ---
+if (string.IsNullOrEmpty(nonce))
+{
+    // Try to read from HKCU (Windows only).
+    nonce = TryReadNonceFromRegistry();
+    if (string.IsNullOrEmpty(nonce))
+    {
+        Console.Error.WriteLine("[Harness] ERROR: no handshake nonce. " +
+            "Pass --nonce <value> or ensure the plugin has written it to " +
+            @"HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce");
+        return 1;
+    }
+}
+
+Console.WriteLine($"[Harness] Nonce: {nonce[..Math.Min(8, nonce.Length)]}...");
+
+// --- Connect to plugin pipe ---
+await using var pipe = new PipeClient(pipeName);
+try
+{
+    Console.Write("[Harness] Connecting to plugin pipe... ");
+    await pipe.ConnectAsync(timeoutMs: 5000, cts.Token);
+    Console.WriteLine("OK");
+    await pipe.HandshakeAsync(nonce, cts.Token);
+    Console.WriteLine("[Harness] Handshake complete.");
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"\n[Harness] ERROR connecting to plugin: {ex.Message}");
+    Console.Error.WriteLine("Is KeePass running with a .kdbx open and the KeePassKeyWin plugin loaded?");
+    return 1;
+}
+
+// --- Connect to Chrome CDP (skipped in smoke mode) ---
+// In smoke mode all operations go directly through the plugin pipe; no browser
+// interaction is needed. cdp remains null and KeePassKeyWinHarness.StartAsync no-ops
+// the CDP setup path when _cdp == null.
+CdpClient? cdp = null;
+if (!smokeTest)
+{
+    cdp = new CdpClient();
+    try
+    {
+        Console.Write($"[Harness] Discovering Chrome target at port {cdpPort}... ");
+        var wsUrl = await ChromeTarget.GetFirstPageWebSocketUrlAsync(cdpPort);
+        Console.WriteLine($"OK ({wsUrl[..Math.Min(60, wsUrl.Length)]}...)");
+
+        await cdp.ConnectAsync(wsUrl, cts.Token);
+        Console.WriteLine("[Harness] CDP connected.");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"\n[Harness] ERROR connecting to Chrome: {ex.Message}");
+        Console.Error.WriteLine($"Launch Chrome with: --remote-debugging-port={cdpPort}");
+        await cdp.DisposeAsync();
+        return 1;
+    }
+}
+
+// --- Start harness ---
+// cdp is null in smoke mode; KeePassKeyWinHarness.StartAsync no-ops the CDP side when _cdp == null.
+// Disposal order matters: harness.DisposeAsync() calls WebAuthn.removeVirtualAuthenticator
+// via _cdp, so harness must dispose BEFORE cdp. We use explicit disposal here rather than
+// `await using var` because the latter interleaves with the outer `finally` in LIFO order,
+// which would dispose cdp first and turn removeVirtualAuthenticator into a silent no-op.
+var harness = new KeePassKeyWinHarness(pipe, cdp);
+int exitCode = 0;
+try
+{
+    await harness.StartAsync(cts.Token);
+    if (!smokeTest)
+        Console.WriteLine("[Harness] Virtual authenticator installed. Ready.");
+
+    if (smokeTest)
+    {
+        exitCode = await RunSmokeTestAsync(harness, pipe, rpId, rpName, cts.Token);
+    }
+    else
+    {
+        // --- Interactive mode ---
+        Console.WriteLine();
+        Console.WriteLine("Commands: create | list <rpId> | sign <credId> | quit");
+        while (!cts.Token.IsCancellationRequested)
+        {
+            Console.Write("> ");
+            var line = Console.ReadLine();
+            if (line == null || line is "quit" or "q") break;
+
+            var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) continue;
+
+            try
+            {
+                switch (parts[0])
+                {
+                    case "create":
+                    {
+                        var credId = await harness.CreatePasskeyAsync(
+                            rpId, rpName,
+                            userHandle: Convert.ToBase64String(Guid.NewGuid().ToByteArray()),
+                            userName: "test@example.com",
+                            userDisplayName: "Test User",
+                            cts.Token);
+                        Console.WriteLine($"Created: {credId}");
+                        break;
+                    }
+                    case "list":
+                    {
+                        var rp = parts.Length > 1 ? parts[1] : rpId;
+                        var result = await pipe.CallAsync("keepasskeywin.listCredentials",
+                            new Newtonsoft.Json.Linq.JObject { ["rpId"] = rp }, cts.Token);
+                        Console.WriteLine(result?.ToString(Newtonsoft.Json.Formatting.Indented));
+                        break;
+                    }
+                    case "sign":
+                    {
+                        var credId = parts.Length > 1 ? parts[1] : string.Empty;
+                        if (string.IsNullOrEmpty(credId)) { Console.WriteLine("Usage: sign <credentialId>"); break; }
+                        var ok = await harness.VerifyAssertionAsync(
+                            credId, rpId,
+                            authDataBytes: new byte[37],
+                            clientDataHash: System.Security.Cryptography.SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes("{}")),
+                            cts.Token);
+                        Console.WriteLine(ok ? "Signature OK" : "Signature FAILED");
+                        break;
+                    }
+                    default:
+                        Console.WriteLine("Unknown command. Commands: create | list [rpId] | sign <credId> | quit");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error: {ex.Message}");
+            }
+        }
+
+        Console.WriteLine("[Harness] Exiting.");
+    }
+}
+finally
+{
+    // Dispose harness first so removeVirtualAuthenticator can reach the live CDP socket.
+    await harness.DisposeAsync();
+    if (cdp != null)
+        await cdp.DisposeAsync();
+}
+
+return exitCode;
+
+// --- Smoke test ---
+static async Task<int> RunSmokeTestAsync(
+    KeePassKeyWinHarness harness, PipeClient pipe,
+    string rpId, string rpName,
+    CancellationToken ct)
+{
+    Console.WriteLine("[Smoke] Starting smoke test...");
+    bool pass = true;
+
+    try
+    {
+        // 1. createPasskey
+        Console.Write("[Smoke] createPasskey... ");
+        var credId = await harness.CreatePasskeyAsync(
+            rpId, rpName,
+            userHandle: Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }),
+            userName: "smoke@test.com",
+            userDisplayName: "Smoke User",
+            ct);
+        Console.WriteLine($"OK ({credId[..Math.Min(16, credId.Length)]}...)");
+
+        // 2. listCredentials
+        Console.Write("[Smoke] listCredentials... ");
+        var listResult = await pipe.CallAsync("keepasskeywin.listCredentials",
+            new Newtonsoft.Json.Linq.JObject { ["rpId"] = rpId }, ct);
+        var creds = (Newtonsoft.Json.Linq.JArray?)listResult;
+        if (creds == null || creds.Count == 0) throw new Exception("No credentials returned.");
+        Console.WriteLine($"OK ({creds.Count} credential(s))");
+
+        // 3. signAssertion
+        Console.Write("[Smoke] signAssertion... ");
+        var authData   = KeePassKeyWin.Core.WebAuthn.AuthDataBuilder.BuildAssertion(rpId, userVerified: true);
+        var clientData = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("{\"type\":\"webauthn.get\",\"challenge\":\"dGVzdA\"}"));
+        var ok = await harness.VerifyAssertionAsync(credId, rpId, authData, clientData, ct);
+        if (!ok) throw new Exception("Signature verification failed.");
+        Console.WriteLine("OK");
+
+        // 4. deleteCredential
+        Console.Write("[Smoke] deleteCredential... ");
+        var delResult = await pipe.CallAsync("keepasskeywin.deleteCredential",
+            new Newtonsoft.Json.Linq.JObject { ["credentialId"] = credId }, ct);
+        var deleted = delResult?["deleted"] is Newtonsoft.Json.Linq.JValue jv && (bool)jv;
+        if (!deleted) throw new Exception("deleteCredential returned false.");
+        Console.WriteLine("OK");
+
+        Console.WriteLine("[Smoke] All checks PASSED.");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[Smoke] FAILED: {ex.Message}");
+        pass = false;
+    }
+
+    return pass ? 0 : 1;
+}
+
+static string? TryReadNonceFromRegistry()
+{
+    if (!OperatingSystem.IsWindows()) return null;
+    try
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\KeePassKeyWin");
+        return key?.GetValue("HandshakeNonce") as string;
+    }
+    catch
+    {
+        return null;
+    }
+}

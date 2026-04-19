@@ -2,14 +2,14 @@
 
 ## Supported versions
 
-PassKee is pre-1.0 software. Only the latest commit on `master` is supported.
+KeePassKeyWin is pre-1.0 software. Only the latest commit on `master` is supported.
 Tagged releases will be announced separately once v1.0 ships.
 
 ## Reporting a vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-PassKee brokers FIDO2 / WebAuthn credentials between Windows and a KeePass
+KeePassKeyWin brokers FIDO2 / WebAuthn credentials between Windows and a KeePass
 vault. A bug in the wrong place could compromise user passkeys, so we take
 disclosure seriously.
 
@@ -17,10 +17,10 @@ Report vulnerabilities privately via one of these channels, in order of
 preference:
 
 1. **GitHub private vulnerability reports** — open a report at
-   <https://github.com/marcolodini/PassKee/security/advisories/new>.
+   <https://github.com/marcolodini/KeePassKeyWin/security/advisories/new>.
    Preferred because it keeps the coordination thread attached to the repo.
 2. **Email** — `marco.lodini@atechnordary.cloud` with subject line beginning
-   `[PassKee SECURITY]`. Please encrypt sensitive reports with the
+   `[KeePassKeyWin SECURITY]`. Please encrypt sensitive reports with the
    maintainer's OpenPGP key:
 
    - **Fingerprint**: `EA3C F4AA 91CE FAC5 68CF  8894 A8BF FD77 FA72 0913`
@@ -58,8 +58,8 @@ report on YYYY-MM-DD and have not heard back" — no technical details.
 
 In scope:
 
-- The PassKee plugin (`src/PassKee.Plugin/`), core (`src/PassKee.Core/`),
-  and Rust sidecar (`src/PassKee.Provider/`).
+- The KeePassKeyWin plugin (`src/KeePassKeyWin.Plugin/`), core (`src/KeePassKeyWin.Core/`),
+  and Rust sidecar (`src/KeePassKeyWin.Provider/`).
 - The IPC protocol between them (`docs/IPC_PROTOCOL.md`).
 - The MSIX manifest and COM registration flow.
 

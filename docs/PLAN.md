@@ -1,4 +1,4 @@
-# PassKee — Implementation Plan (live)
+# KeePassKeyWin — Implementation Plan (live)
 
 Live task tracking — see [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design reference. This file is the maintainer's development log; unchecked items are deferrals, not promises.
 
@@ -11,8 +11,8 @@ Migrate discrete implementable tasks to GitHub Issues once the architecture stab
 - [x] `LICENSE` (GPL-3 notice)
 - [x] `.gitignore` (C# + Rust + MSIX)
 - [x] `docs/PLAN.md`, `docs/ARCHITECTURE.md`, `docs/SPECS.md`
-- [x] `src/PassKee.Plugin/` — SDK-style csproj targeting `net48`
-- [x] `src/PassKee.Provider/` — Rust cargo project
+- [x] `src/KeePassKeyWin.Plugin/` — SDK-style csproj targeting `net48`
+- [x] `src/KeePassKeyWin.Provider/` — Rust cargo project
 
 ## Phase 0.5 — De-risk crypto + storage (no MSIX/COM)
 
@@ -33,7 +33,7 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 ## Phase 1 — Plugin skeleton (production-grade)
 
 - [x] OS version gate via `RtlGetVersion` P/Invoke (`OsVersionCheck`); graceful degradation (log + return true, skip pipe)
-- [ ] Single-instance pipe (`\\.\pipe\PassKee.<sessionId>`); second-instance detection + warning
+- [ ] Single-instance pipe (`\\.\pipe\KeePassKeyWin.<sessionId>`); second-instance detection + warning
 - [ ] Handshake: client package family + HKCU nonce verification
 - [ ] Full JSON-RPC method surface (hello, createPasskey, listCredentials, signAssertion, deleteCredential, enumerateForSync)
 - [x] KeePass Tools menu entry (About, Show Passkeys folder, OS compatibility) + entry editor read-only passkey tab (`MenuEntry`, `PasskeyEntryDecorator`, `AboutDialog`)
@@ -44,8 +44,8 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 
 ### Phase 2a — Rust IPC client + CTAP2 types ✓
 
-- [x] `src/PassKee.Provider/src/ipc/mod.rs` — JSON-RPC 2.0 pipe client, exponential backoff, `VaultLocked`/`NoCredentials`/`ClientUnauthorized` error mapping
-- [x] `src/PassKee.Provider/src/ctap/mod.rs` — typed params/results for all five RPC methods, `rp_id_hash`, `make_credential_to_rpc`
+- [x] `src/KeePassKeyWin.Provider/src/ipc/mod.rs` — JSON-RPC 2.0 pipe client, exponential backoff, `VaultLocked`/`NoCredentials`/`ClientUnauthorized` error mapping
+- [x] `src/KeePassKeyWin.Provider/src/ctap/mod.rs` — typed params/results for all five RPC methods, `rp_id_hash`, `make_credential_to_rpc`
 - [x] `src/main.rs` CLI — `smoke` and `make-credential` subcommands (create→list→sign→delete flow)
 - [x] 23 unit tests passing on Linux (IPC round-trip via Unix socket, CTAP serde, error mapping)
 
@@ -63,52 +63,52 @@ Validate the hardest correctness-sensitive parts — crypto, CBOR, storage, IPC 
 - [x] `makeappx pack` + `signtool sign` — `scripts/build-msix.ps1` + `scripts/sign-msix.ps1` with publisher/cert-subject pre-check
 - [x] Sideload MSIX → `scripts/install-msix.ps1` asserts `Get-AppxPackage` Publisher / Version / PackageFamilyName
 
-**Phase 2.2 — Activation + COM live path** ✅ GREEN 2026-04-18 (PassKee visible in Settings → Accounts → Passkeys):
+**Phase 2.2 — Activation + COM live path** ✅ GREEN 2026-04-18 (KeePassKeyWin visible in Settings → Accounts → Passkeys):
 
-> **Architecture pivot (Session 3):** out-of-process activation via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via DLL. The in-proc code path (`src/com/dll.rs`) was deleted; class factory + IClassFactory vtable live in `passkee-provider.exe`'s `main()` under `-PluginActivated`.
+> **Architecture pivot (Session 3):** out-of-process activation via `com:ExeServer` / `CLSCTX_LOCAL_SERVER`, not in-proc via DLL. The in-proc code path (`src/com/dll.rs`) was deleted; class factory + IClassFactory vtable live in `keepasskeywin-provider.exe`'s `main()` under `-PluginActivated`.
 >
 > **ABI archaeology (Session 4):** The locally-installed SDK 10.0.26100.0 declares a truncated 7-field `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS`. The runtime DLL on build 26200.8037 implements the 9-field 72-byte shape from SDK 10.0.26100.7175 (the version PasskeyManager declares). Four wrong guesses (7-field with null logos, 7-field with non-null logos, 9-field with inline 16-byte GUID, 9-field with pointer GUID and string CLSID) before the research agent extracted the authoritative header from NuGet. `rclsid` is `REFCLSID` = 8-byte pointer-to-GUID; the two `SupportedRpIds` fields at the tail were being read from stack garbage and crashed (STATUS_ACCESS_VIOLATION) when that garbage looked like a non-zero count.
 
-- [x] Add `-PluginActivated` arg handling in `passkee-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages
+- [x] Add `-PluginActivated` arg handling in `keepasskeywin-provider.exe` `main()` — registers class factory via `CoRegisterClassObject(REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED)`, enters STA, pumps messages
 - [x] Move `IPluginAuthenticatorImpl` / vtable into the EXE binary; delete `src/com/dll.rs` entirely
-- [x] `WebAuthNPluginAddAuthenticator` call — `passkee-provider.exe register` + `unregister` subcommands, runtime-loaded via LoadLibraryW/GetProcAddress (EXPERIMENTAL_ symbol is NOT in webauthn.lib's import table)
+- [x] `WebAuthNPluginAddAuthenticator` call — `keepasskeywin-provider.exe register` + `unregister` subcommands, runtime-loaded via LoadLibraryW/GetProcAddress (EXPERIMENTAL_ symbol is NOT in webauthn.lib's import table)
 - [x] **Verify Settings → Accounts → Passkeys → Advanced options lists the provider** (hard gate — cleared 2026-04-18)
 - [x] STA re-entrancy: `sta_block_on()` replaces `runtime.block_on` in the authenticator dispatch; uses `CoWaitForMultipleHandles` so the message pump keeps running during pipe I/O
 - [x] Tighten `WebauthNPluginOperationResponse` offset assertions (now `== 16` exact on x64, with `offset_of!` assertions)
-- [x] Drop the `passkee_provider.dll` cdylib — removed from Cargo.toml `crate-type`, build-msix.ps1, validate-phase2.ps1; `src/com/dll.rs` deleted
+- [x] Drop the `keepasskeywin_provider.dll` cdylib — removed from Cargo.toml `crate-type`, build-msix.ps1, validate-phase2.ps1; `src/com/dll.rs` deleted
 - [ ] Named-pipe connection test with live KeePass plugin under the out-of-proc EXE (deferred to Phase 2.3 — requires a scriptable C# pipe server stub)
 - [ ] Runtime vtable validation: attach WinDbg to activated EXE, confirm slot 3 = MakeCredential, slot 6 = GetLockStatus (deferred — run if Phase 3 browser flow debugging needs it)
 
 ## Phase 3 — End-to-end `MakeCredential` ✅ GREEN 2026-04-18
 
-Live browser E2E PASSED on Win11 25H2 build 26200.8037. Registration at webauthn.io via PassKee succeeds end-to-end.
+Live browser E2E PASSED on Win11 25H2 build 26200.8037. Registration at webauthn.io via KeePassKeyWin succeeds end-to-end.
 
-- [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/PassKee.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard. Session 6 fix: `SkipValue` tolerates MT7 simple values (false/true/null/undefined) so we can ignore `options: {rk:true, uv:true}` — webauthn.io sends them and we were rejecting.
+- [x] CBOR decode of `MakeCredential` request — hand-rolled `CborReader` in `src/KeePassKeyWin.Core/Cbor/CborReader.cs` mirroring existing `CborWriter`; rejects indefinite-length / tags / floats; length-bomb guard. Session 6 fix: `SkipValue` tolerates MT7 simple values (false/true/null/undefined) so we can ignore `options: {rk:true, uv:true}` — webauthn.io sends them and we were rejecting.
 - [x] authData construction with real UV flag — `AuthDataBuilder.Build/BuildAssertion` now require explicit `userVerified` (no default); flag propagated from Rust-side UV result
 - [x] Windows Hello UV via `WebAuthNPluginPerformUserVerification` — dynamic LoadLibrary binding (stable-name-first, EXPERIMENTAL_ fallback), called inline on STA, response freed on every path, E_ABORT propagated on user cancel. Session 6 fix: `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST.rguidTransactionId` is `REFGUID` (pointer), not inline GUID — struct 40→32 bytes.
-- [x] `passkee.makeCredentialRaw` IPC round-trip — new JSON-RPC method carries `{cbor, uv}`; returns `{cbor}` CTAP2 attestation object with **integer keys** `{1:"none", 2:authData, 3:{}}` per CTAP 2.1 §6.1. Error codes: `-32030 UnsupportedAlgorithm`, `-32031 CredentialExcluded`. Session 6 fix: Rust sidecar now performs `passkee.hello` handshake (PFN + HKCU nonce) on COM activation; plugin's `RegistryNonceStore.ConsumeNonce` rotates the nonce so subsequent activations can authenticate.
+- [x] `keepasskeywin.makeCredentialRaw` IPC round-trip — new JSON-RPC method carries `{cbor, uv}`; returns `{cbor}` CTAP2 attestation object with **integer keys** `{1:"none", 2:authData, 3:{}}` per CTAP 2.1 §6.1. Error codes: `-32030 UnsupportedAlgorithm`, `-32031 CredentialExcluded`. Session 6 fix: Rust sidecar now performs `keepasskeywin.hello` handshake (PFN + HKCU nonce) on COM activation; plugin's `RegistryNonceStore.ConsumeNonce` rotates the nonce so subsequent activations can authenticate.
 - [x] webauthn.io from Edge: register succeeds, server-side attestation verification passes — ✅ 2026-04-18 on Win11 build 26200.8037. Credential persisted to vault; site confirms registration.
 - [x] `cmd_register` idempotent refresh on NTE_EXISTS — remove+retry wraps the plugin-registration API whose documented "update on re-register" isn't actually implemented by the runtime.
 
 **Deferred to Phase 3.1 (polish):**
-- [ ] Switch `passkee-provider.exe` to `#![windows_subsystem = "windows"]` so the console stops flashing during COM activation. Kept as console for now because the `[activate]` / `[dispatch]` `eprintln!` breadcrumbs are load-bearing for live debugging.
+- [ ] Switch `keepasskeywin-provider.exe` to `#![windows_subsystem = "windows"]` so the console stops flashing during COM activation. Kept as console for now because the `[activate]` / `[dispatch]` `eprintln!` breadcrumbs are load-bearing for live debugging.
 - [ ] Demote `eprintln!` breadcrumbs to `tracing::debug` once stable.
 
 ## Phase 4 — End-to-end `GetAssertion` ✅ GREEN 2026-04-19
 
-Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via PassKee succeeds end-to-end — passkey picker shows the PassKee credential, Windows Hello UV fires, assertion signs, server-side verification accepts the login.
+Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via KeePassKeyWin succeeds end-to-end — passkey picker shows the KeePassKeyWin credential, Windows Hello UV fires, assertion signs, server-side verification accepts the login.
 
-- [x] `WebAuthNPluginAuthenticatorAddCredentials` FFI — dynamic-load binding + `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` struct (64B, x64 layout asserted) in `src/PassKee.Provider/src/com/webauthnplugin_ext.rs`; called from `dispatch_operation`'s MakeCredential success arm; best-effort (logs and continues on failure so webauthn.io registration isn't held hostage to picker visibility)
-- [x] `passkee.makeCredentialRaw` response extended with 6 fields (`credentialIdB64Url`, `rpId`, `rpName`, `userHandleB64Url`, `userName`, `userDisplayName`) — Rust sidecar decodes and populates `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS`
-- [x] `passkee.getAssertionRaw` IPC handler — CTAP2 §6.2 request parse (integer-keyed top + text-keyed `PublicKeyCredentialDescriptor` in allowList), credential selection from allowList, ES256 DER-signed assertion, CTAP2-integer-keyed response with text-keyed nested `credential` descriptor (same shape-discipline as Phase 3's attestationObject — hex-shape canary test added)
+- [x] `WebAuthNPluginAuthenticatorAddCredentials` FFI — dynamic-load binding + `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` struct (64B, x64 layout asserted) in `src/KeePassKeyWin.Provider/src/com/webauthnplugin_ext.rs`; called from `dispatch_operation`'s MakeCredential success arm; best-effort (logs and continues on failure so webauthn.io registration isn't held hostage to picker visibility)
+- [x] `keepasskeywin.makeCredentialRaw` response extended with 6 fields (`credentialIdB64Url`, `rpId`, `rpName`, `userHandleB64Url`, `userName`, `userDisplayName`) — Rust sidecar decodes and populates `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS`
+- [x] `keepasskeywin.getAssertionRaw` IPC handler — CTAP2 §6.2 request parse (integer-keyed top + text-keyed `PublicKeyCredentialDescriptor` in allowList), credential selection from allowList, ES256 DER-signed assertion, CTAP2-integer-keyed response with text-keyed nested `credential` descriptor (same shape-discipline as Phase 3's attestationObject — hex-shape canary test added)
 - [x] `CborReader.ReadBool()` for CTAP2 `options` map (MT7 simple values 0xF4/0xF5)
 - [x] `PasskeyRecord.SignCount` + `IPasskeyStore.IncrementSignCount` — thread-safe read-increment-write with **synchronous `PwDatabase.Save`** (critical: prevents signCount-rollback replay after KeePass-close-without-save, which would get the user permanently locked out at the RP per WebAuthn §6.1.1 cloned-authenticator clause)
 - [x] HRESULT mapping: `ClientError::NoCredentials` → `NTE_NOT_FOUND (0x80090011)` (empty allowList / no allowList match)
 - [x] `AuthDataBuilder.BuildAssertion(rpId, userVerified, signCount)` — extended from Phase 3's hardcoded-zero signCount; 37-byte assertion authData with explicit UV propagation
 - [x] Linux CI green: `cargo test --all-targets` 54 passing; `dotnet test` 220 passing (up from 183); `cargo xwin build --target x86_64-pc-windows-msvc --release` clean
 - [x] webauthn.io from Edge: login succeeds, signature verifies server-side — ✅ 2026-04-19 on Win11 build 26200.8037
-- [x] Windows Settings picker + webauthn.io picker both list the PassKee credential after MakeCredential (AddCredentials OS-side state confirmed)
-- [x] Pipe-busy fix (`ea5cbd1`): `cf_create_instance` shares one `PasskeeAuthenticatorState` Arc process-wide — webauthn.dll's per-operation `CoCreateInstance` no longer causes `ERROR_PIPE_BUSY` when Object 1 (MakeCredential) still holds the pipe while Object 2 (GetAssertion) activates
+- [x] Windows Settings picker + webauthn.io picker both list the KeePassKeyWin credential after MakeCredential (AddCredentials OS-side state confirmed)
+- [x] Pipe-busy fix (`ea5cbd1`): `cf_create_instance` shares one `KeePassKeyWinAuthenticatorState` Arc process-wide — webauthn.dll's per-operation `CoCreateInstance` no longer causes `ERROR_PIPE_BUSY` when Object 1 (MakeCredential) still holds the pipe while Object 2 (GetAssertion) activates
 
 **MVP-scope punts (explicit, documented for Phase 4.1 follow-up):**
 - Discoverable-credential / usernameless flow (empty allowList) returns `NoCredentials`/`NTE_NOT_FOUND`. webauthn.io's default login sends a non-empty allowCredentials, so this doesn't block the E2E gate — only the "usernameless" toggle.
@@ -143,13 +143,13 @@ Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via
 
 Captured after the pre-open-source audit. None block making the repo public, but all are worth doing before a broader announcement (e.g., Hacker News, KeePass plugin-list listing).
 
-- [ ] **Trademark search** — "PassKee" is one letter from the industry term "passkey" (FIDO Alliance, Apple, Google, Microsoft usage). Run USPTO + EUIPO + UIBM searches in class 42 (software / security services) before public launch; consider rebranding if anything collides. Cheaper pre-public than post-public.
-- [x] **CI** — `.github/workflows/ci.yml` runs `dotnet test PassKee.sln` + `cargo test --all-targets` on Ubuntu for push/PR. Windows cross-compile gate (`cargo xwin build --release`) deferred.
+- [x] **Trademark search** — Completed 2026-04-19. Original name "PassKee" carried a YELLOW confusing-similarity risk against **BearMinds AB's "PassKeep"** (EUTM 019224407, registered 2025-11-12, classes 9 + 42, active EU-wide incl. Italy). No USPTO/WIPO/UIBM direct collision, but the EU overlap was enough to trigger a preemptive rebrand to **KeePassKeyWin** before public announcement. FIDO Alliance holds no "PASSKEY" word mark (only the icon + "FIDO"), so the `passkey` suffix itself carries no trademark risk.
+- [x] **CI** — `.github/workflows/ci.yml` runs `dotnet test KeePassKeyWin.sln` + `cargo test --all-targets` on Ubuntu for push/PR. Windows cross-compile gate (`cargo xwin build --release`) deferred.
 - [x] **`CONTRIBUTING.md`** — contributor guide at repo root. Covers host-OS matrix (Windows full / Linux-WSL tests + `cargo xwin` / macOS tests only), toolchain (.NET 8 + Rust stable + Windows SDK), build + test commands mirroring CI, live-validation gate for runtime PRs, style/commits/PR expectations, and a landmines section flagging CTAP2 int-vs-text CBOR keys, synchronous `signCount` save, `WEBAUTHN_PLUGIN_*` struct offsets, and Settings-UI non-visibility.
 - [x] **`CODE_OF_CONDUCT.md`** — Contributor Covenant v2.1 reference, reporting address matches `SECURITY.md`.
 - [ ] **`CHANGELOG.md`** — map phases to user-visible changes; low priority until the first tagged release.
 - [x] **`.github/dependabot.yml`** — Cargo + NuGet (all 5 csprojs) + github-actions; grouped PRs, weekly (actions monthly).
 - [x] **GitHub issue + PR templates** — `.github/ISSUE_TEMPLATE/bug_report.yml`, `feature_request.yml`, `.github/PULL_REQUEST_TEMPLATE.md`.
-- [ ] **Screenshot / demo** — a single screenshot of the Windows passkey picker listing a PassKee credential is the single highest-signal trust-builder for adoption.
-- [ ] **MSIX publisher subject placeholder** — `CN=Marco Lodini, O=PassKee, C=IT` in `Package.appxmanifest` and `ensure-dev-cert.ps1` needs to match the real code-signing cert subject once a production cert is obtained. Not a repo-public blocker; a release-engineering gate.
+- [ ] **Screenshot / demo** — a single screenshot of the Windows passkey picker listing a KeePassKeyWin credential is the single highest-signal trust-builder for adoption.
+- [ ] **MSIX publisher subject placeholder** — `CN=Marco Lodini, O=KeePassKeyWin, C=IT` in `Package.appxmanifest` and `ensure-dev-cert.ps1` needs to match the real code-signing cert subject once a production cert is obtained. Not a repo-public blocker; a release-engineering gate.
 - [ ] **Phase 3.1 polish (already tracked above)** — demote `eprintln!` breadcrumbs to `tracing::debug`, add `#![windows_subsystem = "windows"]`. Worth doing before the first signed MSIX ships, not before the repo goes public.

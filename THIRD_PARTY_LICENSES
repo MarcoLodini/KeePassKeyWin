@@ -1,7 +1,7 @@
-PassKee — Third-Party License Attribution
-=========================================
+KeePassKeyWin — Third-Party License Attribution
+================================================
 
-PassKee as a whole is licensed under GPL-3.0-or-later (see LICENSE).
+KeePassKeyWin as a whole is licensed under GPL-3.0-or-later (see LICENSE).
 This file lists third-party components bundled with the source and the
 licenses under which they are redistributed.
 
@@ -9,7 +9,7 @@ licenses under which they are redistributed.
 
 1. Microsoft WebAuthn Plug-in Authenticator Header
    Source  : https://github.com/microsoft/webauthn
-   File    : src/PassKee.Provider/idl/pluginauthenticator.h
+   File    : src/KeePassKeyWin.Provider/idl/pluginauthenticator.h
    License : MIT
    © Microsoft Corporation.
 
@@ -37,8 +37,8 @@ licenses under which they are redistributed.
 
 -------------------------------------------------------------------------------
 
-2. Rust crate dependencies (src/PassKee.Provider/)
-   See src/PassKee.Provider/Cargo.lock for the exact dependency tree and
+2. Rust crate dependencies (src/KeePassKeyWin.Provider/)
+   See src/KeePassKeyWin.Provider/Cargo.lock for the exact dependency tree and
    resolved versions. Licenses were audited as of 2026-04-19 and all
    transitive dependencies are under one of:
      - MIT
@@ -65,7 +65,7 @@ licenses under which they are redistributed.
 
    For the complete attribution list including indirect dependencies,
    run `cargo about generate` or `cargo license` in
-   src/PassKee.Provider/; the output enumerates every transitive crate.
+   src/KeePassKeyWin.Provider/; the output enumerates every transitive crate.
 
    MIT license text (applies to all MIT-licensed crates above):
 
@@ -297,7 +297,7 @@ licenses under which they are redistributed.
 
 -------------------------------------------------------------------------------
 
-3. NuGet dependencies (src/PassKee.Plugin/, src/PassKee.Core/)
+3. NuGet dependencies (src/KeePassKeyWin.Plugin/, src/KeePassKeyWin.Core/)
    - Newtonsoft.Json 13.0.3 — MIT — © James Newton-King
    - System.Memory 4.5.5    — MIT — © .NET Foundation and Contributors
 

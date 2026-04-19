@@ -7,10 +7,10 @@ DOTNET="/mnt/c/Program Files/dotnet/dotnet.exe"
 
 "$DOTNET" build tests/TestSupport/KeePassStub/KeePassStub.csproj
 sync; sleep 1
-"$DOTNET" build src/PassKee.Core/PassKee.Core.csproj
+"$DOTNET" build src/KeePassKeyWin.Core/KeePassKeyWin.Core.csproj
 sync; sleep 1
-"$DOTNET" build src/PassKee.Plugin/PassKee.Plugin.csproj
+"$DOTNET" build src/KeePassKeyWin.Plugin/KeePassKeyWin.Plugin.csproj
 sync; sleep 1
-"$DOTNET" build tests/PassKee.Core.Tests/PassKee.Core.Tests.csproj
+"$DOTNET" build tests/KeePassKeyWin.Core.Tests/KeePassKeyWin.Core.Tests.csproj
 sync; sleep 1
-"$DOTNET" test  tests/PassKee.Core.Tests/PassKee.Core.Tests.csproj --no-build
+"$DOTNET" test  tests/KeePassKeyWin.Core.Tests/KeePassKeyWin.Core.Tests.csproj --no-build

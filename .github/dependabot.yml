@@ -2,7 +2,7 @@ version: 2
 
 updates:
   - package-ecosystem: "cargo"
-    directory: "/src/PassKee.Provider"
+    directory: "/src/KeePassKeyWin.Provider"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -12,10 +12,10 @@ updates:
 
   - package-ecosystem: "nuget"
     directories:
-      - "/src/PassKee.Core"
-      - "/src/PassKee.Plugin"
-      - "/src/PassKee.Harness"
-      - "/tests/PassKee.Core.Tests"
+      - "/src/KeePassKeyWin.Core"
+      - "/src/KeePassKeyWin.Plugin"
+      - "/src/KeePassKeyWin.Harness"
+      - "/tests/KeePassKeyWin.Core.Tests"
       - "/tests/TestSupport/KeePassStub"
     schedule:
       interval: "weekly"

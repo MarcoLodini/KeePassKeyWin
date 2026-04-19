@@ -1,17 +1,17 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Idempotent self-signed developer certificate bootstrap for PassKee MSIX signing.
+    Idempotent self-signed developer certificate bootstrap for KeePassKeyWin MSIX signing.
 
 .DESCRIPTION
     Purpose     : Create and trust a self-signed code-signing certificate so that
-                  sign-msix.ps1 can sign PassKee.Provider.msix without a purchased cert.
+                  sign-msix.ps1 can sign KeePassKeyWin.Provider.msix without a purchased cert.
     Prerequisites: Windows 11; PowerShell 5.1+; the TrustedPeople import step requires
                   an elevated (admin) session.
-    Inputs      : -Subject     (default: 'CN=Marco Lodini, O=PassKee, C=IT')
-                  -PfxPath     (default: 'out\PassKee.Dev.pfx', relative to repo root)
+    Inputs      : -Subject     (default: 'CN=Marco Lodini, O=KeePassKeyWin, C=IT')
+                  -PfxPath     (default: 'out\KeePassKeyWin.Dev.pfx', relative to repo root)
                   -PfxPassword (SecureString; prompted if absent)
-    Outputs     : out\PassKee.Dev.pfx      — the signing credential (gitignored)
+    Outputs     : out\KeePassKeyWin.Dev.pfx      — the signing credential (gitignored)
                   out\cert-thumbprint.txt  — thumbprint for later cleanup
     Exit codes  : 0 = PASS, 1 = FAIL
 
@@ -19,7 +19,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]       $Subject     = 'CN=Marco Lodini, O=PassKee, C=IT',
+    [string]       $Subject     = 'CN=Marco Lodini, O=KeePassKeyWin, C=IT',
     [string]       $PfxPath     = '',
     [SecureString] $PfxPassword = $null
 )
@@ -33,7 +33,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrEmpty($PfxPath)) {
-    $PfxPath = Join-Path $repoRoot 'out\PassKee.Dev.pfx'
+    $PfxPath = Join-Path $repoRoot 'out\KeePassKeyWin.Dev.pfx'
 } elseif (-not [System.IO.Path]::IsPathRooted($PfxPath)) {
     $PfxPath = Join-Path $repoRoot $PfxPath
 }
@@ -97,7 +97,7 @@ if ($existingCerts.Count -gt 0) {
         -TextExtension  @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}') `
         -Subject        $Subject `
         -NotAfter       (Get-Date).AddYears(1) `
-        -FriendlyName   'PassKee Dev'
+        -FriendlyName   'KeePassKeyWin Dev'
     Write-Host "[ensure-dev-cert] Created cert: Thumbprint=$($cert.Thumbprint) Expiry=$($cert.NotAfter.ToString('yyyy-MM-dd'))"
 }
 

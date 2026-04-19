@@ -1,4 +1,4 @@
-# PassKee Windows Validation Runbook
+# KeePassKeyWin Windows Validation Runbook
 
 > **v0.1 pre-release — expect churn.** This runbook validates Phase 0.5
 > (crypto + storage + IPC) end-to-end against a real KeePass + real Chrome
@@ -48,11 +48,11 @@ throwaway vault for debugging.
 ```powershell
 # Replace the path if KeePass is installed elsewhere.
 $KeePassDir = "C:\Program Files\KeePass Password Safe 2"
-dotnet build src/PassKee.Plugin -f net48 /p:KeePassDir="$KeePassDir"
+dotnet build src/KeePassKeyWin.Plugin -f net48 /p:KeePassDir="$KeePassDir"
 ```
 
 Expected: `Build succeeded. 0 Error(s)` and output at
-`src\PassKee.Plugin\bin\Debug\net48\PassKee.dll`.
+`src\KeePassKeyWin.Plugin\bin\Debug\net48\KeePassKeyWin.dll`.
 
 If you prefer the automated script:
 
@@ -66,16 +66,16 @@ If you prefer the automated script:
 ## Step 2 — Build the harness
 
 ```powershell
-dotnet build src/PassKee.Harness -c Release
+dotnet build src/KeePassKeyWin.Harness -c Release
 ```
 
-Harness binary: `src\PassKee.Harness\bin\Release\net8.0\PassKee.Harness.exe`
+Harness binary: `src\KeePassKeyWin.Harness\bin\Release\net8.0\KeePassKeyWin.Harness.exe`
 
 ---
 
 ## Step 3 — Install the plugin into KeePass
 
-Copy `PassKee.dll` and its dependency `Newtonsoft.Json.dll` into the KeePass
+Copy `KeePassKeyWin.dll` and its dependency `Newtonsoft.Json.dll` into the KeePass
 `Plugins\` folder:
 
 ```powershell
@@ -85,14 +85,14 @@ Copy `PassKee.dll` and its dependency `Newtonsoft.Json.dll` into the KeePass
 Or manually:
 
 ```powershell
-$src    = "src\PassKee.Plugin\bin\Debug\net48"
+$src    = "src\KeePassKeyWin.Plugin\bin\Debug\net48"
 $target = "$KeePassDir\Plugins"
-Copy-Item "$src\PassKee.dll"         $target -Force
+Copy-Item "$src\KeePassKeyWin.dll"         $target -Force
 Copy-Item "$src\Newtonsoft.Json.dll" $target -Force
 ```
 
 > **Architecture must match.** KeePass 2.x ships as 32-bit (x86) by default.
-> `PassKee.Plugin` targets AnyCPU, so it adapts — but if you see a
+> `KeePassKeyWin.Plugin` targets AnyCPU, so it adapts — but if you see a
 > `BadImageFormatException` in the KeePass log, confirm KeePass's
 > bitness with `(Get-Item "$KeePassDir\KeePass.exe").Headers.Machine`.
 
@@ -103,13 +103,13 @@ Copy-Item "$src\Newtonsoft.Json.dll" $target -Force
 1. Close KeePass if it is running, then start it again.
 2. Open or create a test `.kdbx` file (do **not** use your real vault).
 3. Click **Tools** in the menu bar.
-   - You should see a **PassKee** submenu.
-   - Click **OS compatibility...** — it should report "Your OS meets PassKee requirements."
-4. Check the KeePass status bar (bottom) — it should not show any PassKee error.
+   - You should see a **KeePassKeyWin** submenu.
+   - Click **OS compatibility...** — it should report "Your OS meets KeePassKeyWin requirements."
+4. Check the KeePass status bar (bottom) — it should not show any KeePassKeyWin error.
 5. Confirm the handshake nonce was written to the registry:
 
 ```powershell
-Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce
+Get-ItemProperty HKCU:\Software\KeePassKeyWin -Name HandshakeNonce
 ```
 
 You should see a 64-character hex string.
@@ -129,9 +129,9 @@ Or manually:
 
 ```powershell
 $sessionId = (Get-Process KeePass -ErrorAction Stop).SessionId
-$nonce     = (Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce).HandshakeNonce
-dotnet run --project src/PassKee.Harness -c Release -- `
-    --pipe "PassKee.$sessionId" `
+$nonce     = (Get-ItemProperty HKCU:\Software\KeePassKeyWin -Name HandshakeNonce).HandshakeNonce
+dotnet run --project src/KeePassKeyWin.Harness -c Release -- `
+    --pipe "KeePassKeyWin.$sessionId" `
     --nonce $nonce `
     --rp webauthn.io `
     --smoke
@@ -140,7 +140,7 @@ dotnet run --project src/PassKee.Harness -c Release -- `
 Expected output (exit code 0):
 
 ```
-[Harness] Pipe: PassKee.1
+[Harness] Pipe: KeePassKeyWin.1
 [Harness] Connecting to plugin pipe... OK
 [Harness] Handshake complete.
 [Harness] No CDP client — running pipe-only (smoke mode).
@@ -151,7 +151,7 @@ Expected output (exit code 0):
 [Smoke] All checks PASSED.
 ```
 
-> As of Phase 2.1, `--smoke` mode is pipe-only: `PasskeeHarness.StartAsync`
+> As of Phase 2.1, `--smoke` mode is pipe-only: `KeePassKeyWinHarness.StartAsync`
 > skips CDP when the client is null, and `RunSmokeTestAsync` never touches the
 > browser. Chrome is only needed for the interactive/browser flow in Step 6.
 
@@ -169,8 +169,8 @@ Start-Process chrome "--remote-debugging-port=9222 --no-first-run --no-default-b
 
 ```powershell
 $sessionId = (Get-Process KeePass).SessionId
-$nonce     = (Get-ItemProperty HKCU:\Software\PassKee -Name HandshakeNonce).HandshakeNonce
-dotnet run --project src/PassKee.Harness -c Release -- `
+$nonce     = (Get-ItemProperty HKCU:\Software\KeePassKeyWin -Name HandshakeNonce).HandshakeNonce
+dotnet run --project src/KeePassKeyWin.Harness -c Release -- `
     --nonce $nonce --rp webauthn.io
 ```
 
@@ -178,7 +178,7 @@ dotnet run --project src/PassKee.Harness -c Release -- `
    to <https://webauthn.io>.
 
 4. Register a passkey:
-   - Enter a username (e.g. `passkee-test-<timestamp>`).
+   - Enter a username (e.g. `keepasskeywin-test-<timestamp>`).
    - Click **Register**. Chrome's virtual authenticator handles the
      `navigator.credentials.create()` call via the CDP harness.
    - In the harness terminal type `create` then press Enter.
@@ -204,7 +204,7 @@ dotnet run --project src/PassKee.Harness -c Release -- `
 
 ```powershell
 # Nonce should be cleared after the first successful handshake.
-$nonce = (Get-ItemProperty HKCU:\Software\PassKee -ErrorAction SilentlyContinue).HandshakeNonce
+$nonce = (Get-ItemProperty HKCU:\Software\KeePassKeyWin -ErrorAction SilentlyContinue).HandshakeNonce
 if ($null -eq $nonce) { Write-Host "Nonce cleared — OK" } else { Write-Warning "Nonce still present" }
 ```
 
@@ -214,9 +214,9 @@ if ($null -eq $nonce) { Write-Host "Nonce cleared — OK" } else { Write-Warning
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| PassKee menu missing from Tools | Plugin DLL not copied / wrong path | Re-run `build-plugin.ps1`; check KeePass log (`View → Show Log`) |
-| `BadImageFormatException` in KeePass log | Architecture mismatch | Check KeePass bitness; PassKee.dll is AnyCPU and should adapt automatically |
-| `[Harness] ERROR connecting to plugin` / timeout | KeePass not running, no `.kdbx` open, or plugin failed to start | Open a `.kdbx` in KeePass; check Tools → PassKee → OS compatibility |
+| KeePassKeyWin menu missing from Tools | Plugin DLL not copied / wrong path | Re-run `build-plugin.ps1`; check KeePass log (`View → Show Log`) |
+| `BadImageFormatException` in KeePass log | Architecture mismatch | Check KeePass bitness; KeePassKeyWin.dll is AnyCPU and should adapt automatically |
+| `[Harness] ERROR connecting to plugin` / timeout | KeePass not running, no `.kdbx` open, or plugin failed to start | Open a `.kdbx` in KeePass; check Tools → KeePassKeyWin → OS compatibility |
 | `Pipe busy` / `another instance is active` | Second KeePass process holds the pipe | Close the duplicate KeePass window |
 | `client_unauthorized` | Handshake nonce expired (5 min TTL) or already consumed | Restart KeePass to regenerate nonce; read it again from registry |
 | `vault_locked` | No `.kdbx` open in KeePass | Open a database in KeePass before running the harness |
@@ -237,7 +237,7 @@ are Phase 2.2.
 
 | Requirement | Notes |
 |---|---|
-| Rust Windows DLL + EXE | `passkee_provider.dll` + `passkee-provider.exe` built for `x86_64-pc-windows-msvc`. Build on Windows (`cargo build --target x86_64-pc-windows-msvc --release`) or on WSL2 (`cargo xwin build …`). If you build on WSL, point the validator at the WSL UNC path — see below. |
+| Rust Windows DLL + EXE | `keepasskeywin_provider.dll` + `keepasskeywin-provider.exe` built for `x86_64-pc-windows-msvc`. Build on Windows (`cargo build --target x86_64-pc-windows-msvc --release`) or on WSL2 (`cargo xwin build …`). If you build on WSL, point the validator at the WSL UNC path — see below. |
 | Windows SDK | For `makeappx.exe` and `signtool.exe` (installed with Visual Studio Build Tools or standalone Win10/11 SDK) |
 | Admin PowerShell | Required **once** to install the dev cert into `Cert:\LocalMachine\TrustedPeople` |
 
@@ -248,7 +248,7 @@ are Phase 2.2.
 .\scripts\validate-phase2.ps1
 
 # WSL cross-compile pattern — build on WSL, validate on Windows:
-.\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\<your-distro>\<path-to-your-checkout>\src\PassKee.Provider\target\x86_64-pc-windows-msvc\release'
+.\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\<your-distro>\<path-to-your-checkout>\src\KeePassKeyWin.Provider\target\x86_64-pc-windows-msvc\release'
 ```
 
 The WSL path form works because `build-msix.ps1` copies the DLL + EXE into its
@@ -263,8 +263,8 @@ only.
 
 ### Expected PASS criteria
 
-- `Get-AppxPackage -Name PassKee.Provider` returns a package with:
-  - `Publisher = CN=Marco Lodini, O=PassKee, C=IT` (exact)
+- `Get-AppxPackage -Name KeePassKeyWin.Provider` returns a package with:
+  - `Publisher = CN=Marco Lodini, O=KeePassKeyWin, C=IT` (exact)
   - `Version = 0.0.1.0`
   - `PackageFamilyName` logged by `install-msix.ps1` — **save this**, Phase 2.2 needs it.
 
@@ -272,7 +272,7 @@ only.
 
 ```powershell
 # Remove the installed package
-Remove-AppxPackage -Package (Get-AppxPackage -Name PassKee.Provider).PackageFullName
+Remove-AppxPackage -Package (Get-AppxPackage -Name KeePassKeyWin.Provider).PackageFullName
 
 # Remove the dev cert (thumbprint recorded in out\cert-thumbprint.txt)
 $tp = Get-Content .\out\cert-thumbprint.txt
@@ -282,7 +282,7 @@ Remove-Item "Cert:\LocalMachine\TrustedPeople\$tp"
 
 ### Known deferred (Phase 2.2)
 
-> **Architecture pivot, Session 3:** the manifest registers `passkee-provider.exe`
+> **Architecture pivot, Session 3:** the manifest registers `keepasskeywin-provider.exe`
 > as an out-of-process (`com:ExeServer`) COM server, matching the Microsoft
 > PasskeyManager reference sample. In-process DLL activation was our original
 > plan but is blocked at runtime by `%ProgramFiles%\WindowsApps\…` ACLs. Phase 2.2
@@ -293,7 +293,7 @@ Remove-Item "Cert:\LocalMachine\TrustedPeople\$tp"
   Until that lands, `CoCreateInstance` on our CLSID will spawn the EXE but
   the EXE won't register its class factory — activation will time out.
 - **`WebAuthNPluginAddAuthenticator`** has no call site yet — the MSIX
-  installs cleanly but PassKee will **not** appear in Settings → Accounts →
+  installs cleanly but KeePassKeyWin will **not** appear in Settings → Accounts →
   Passkeys → Advanced options until that API is wired.
 - **Runtime vtable validation** via debug-attach (now against the EXE, not
   the DLL).

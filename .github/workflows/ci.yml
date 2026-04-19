@@ -25,17 +25,17 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore
-        run: dotnet restore PassKee.sln
+        run: dotnet restore KeePassKeyWin.sln
 
       - name: Test
-        run: dotnet test PassKee.sln --no-restore --nologo --verbosity normal
+        run: dotnet test KeePassKeyWin.sln --no-restore --nologo --verbosity normal
 
   rust:
     name: Rust tests (Linux)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: src/PassKee.Provider
+        working-directory: src/KeePassKeyWin.Provider
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +45,7 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src/PassKee.Provider
+          workspaces: src/KeePassKeyWin.Provider
 
       - name: Test
         run: cargo test --all-targets

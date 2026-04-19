@@ -1,4 +1,4 @@
-# PassKee — Architecture
+# KeePassKeyWin — Architecture
 
 Condensed architectural reference. See [`PLAN.md`](PLAN.md) for the live implementation log.
 
@@ -11,17 +11,17 @@ Condensed architectural reference. See [`PLAN.md`](PLAN.md) for the live impleme
 [ webauthn.dll ]          Windows 11 24H2 build 26100.6725+
            |
            v
-[ PassKee.Provider ]      MSIX sidecar — Rust + windows-rs
+[ KeePassKeyWin.Provider ]      MSIX sidecar — Rust + windows-rs
    IPluginAuthenticator     COM-activated on demand (no tray process)
    CTAP2 CBOR en/decode     WebAuthNPluginAddAuthenticator on first launch
    Windows Hello UV         via WebAuthNPluginPerformUserVerification
            |
-           | Named pipe  \\.\pipe\PassKee.<sessionId>
+           | Named pipe  \\.\pipe\KeePassKeyWin.<sessionId>
            | ACL: current user SID. Plugin verifies the sidecar's package
            | family name and a per-launch HKCU handshake nonce.
            | JSON-RPC 2.0, line-delimited.
            v
-[ PassKee.Plugin ]        KeePass 2.x plugin (.NET Framework 4.8)
+[ KeePassKeyWin.Plugin ]        KeePass 2.x plugin (.NET Framework 4.8)
    Pipe server              Initialize() / Terminate()
    Single-instance          First plugin wins the pipe name
    Vault store              One PwEntry per credential in "Passkeys" group
@@ -60,12 +60,12 @@ Methods (sidecar → plugin):
 
 | Method | Purpose |
 |---|---|
-| `passkee.hello` | Handshake: client pkg family name + HKCU nonce |
-| `passkee.createPasskey` | Generate + store a new passkey |
-| `passkee.listCredentials` | Enumerate credentials for an RP |
-| `passkee.signAssertion` | Sign authData / clientDataHash |
-| `passkee.deleteCredential` | Remove a credential |
-| `passkee.enumerateForSync` | Full list for Windows Settings mirror |
+| `keepasskeywin.hello` | Handshake: client pkg family name + HKCU nonce |
+| `keepasskeywin.createPasskey` | Generate + store a new passkey |
+| `keepasskeywin.listCredentials` | Enumerate credentials for an RP |
+| `keepasskeywin.signAssertion` | Sign authData / clientDataHash |
+| `keepasskeywin.deleteCredential` | Remove a credential |
+| `keepasskeywin.enumerateForSync` | Full list for Windows Settings mirror |
 
 Errors are JSON-RPC error envelopes mapped to CTAP2 status codes inside the sidecar.
 
@@ -75,15 +75,15 @@ One `PwEntry` per credential in a dedicated "Passkeys" group. Title: `<rpName> /
 
 | Field | Location | Protected |
 |---|---|---|
-| credentialId | `Strings["PassKee.credentialId"]` (Base64URL) | no |
-| rpId / rpName | `Strings["PassKee.rpId"]` / `.rpName` | no |
-| userHandle / userName / userDisplayName | `Strings["PassKee.user*"]` | no |
-| algId | `CustomData["PassKee.algId"]` (COSE int) | no |
-| **privateKeyPkcs8** | `Strings["PassKee.privateKey"]` as **ProtectedString** | **yes** |
-| publicKeyCose | `Binaries["PassKee.publicKey.cbor"]` (CBOR) | no |
-| signCount | `CustomData["PassKee.signCount"]` — always `0` | no |
-| aaguid | `CustomData["PassKee.aaguid"]` — zeros for `none` attestation | no |
-| transports / flags | `CustomData["PassKee.*"]` | no |
+| credentialId | `Strings["KeePassKeyWin.credentialId"]` (Base64URL) | no |
+| rpId / rpName | `Strings["KeePassKeyWin.rpId"]` / `.rpName` | no |
+| userHandle / userName / userDisplayName | `Strings["KeePassKeyWin.user*"]` | no |
+| algId | `CustomData["KeePassKeyWin.algId"]` (COSE int) | no |
+| **privateKeyPkcs8** | `Strings["KeePassKeyWin.privateKey"]` as **ProtectedString** | **yes** |
+| publicKeyCose | `Binaries["KeePassKeyWin.publicKey.cbor"]` (CBOR) | no |
+| signCount | `CustomData["KeePassKeyWin.signCount"]` — always `0` | no |
+| aaguid | `CustomData["KeePassKeyWin.aaguid"]` — zeros for `none` attestation | no |
+| transports / flags | `CustomData["KeePassKeyWin.*"]` | no |
 
 **PKCS#8** is used over raw EC scalar so the storage is algorithm-agnostic (RS256/EdDSA future-proofing). **signCount=0** matches Apple/Google synced-passkey behavior and is permitted by WebAuthn L3.
 

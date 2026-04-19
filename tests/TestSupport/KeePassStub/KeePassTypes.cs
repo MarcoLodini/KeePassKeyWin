@@ -1,4 +1,4 @@
-// Minimal surface of KeePass.exe types needed to compile PassKee.Plugin when
+// Minimal surface of KeePass.exe types needed to compile KeePassKeyWin.Plugin when
 // the real KeePass.exe is not present (Linux/CI builds).
 // This assembly must produce the same public API shape as KeePass.exe — no logic.
 //

@@ -1,4 +1,4 @@
-# PassKee — Spec References
+# KeePassKeyWin — Spec References
 
 ## WebAuthn / FIDO2
 
@@ -22,7 +22,7 @@
 
 ## Cryptography notes
 
-- **ECDSA signature encoding on .NET** — `ECDsa.SignData()` returns IEEE P1363 (`r || s`); WebAuthn expects DER ASN.1 (`SEQUENCE { INTEGER r, INTEGER s }`). Conversion helper lives at `src/PassKee.Plugin/Crypto/EcdsaSigner.cs` (to be created in Phase 0.5).
+- **ECDSA signature encoding on .NET** — `ECDsa.SignData()` returns IEEE P1363 (`r || s`); WebAuthn expects DER ASN.1 (`SEQUENCE { INTEGER r, INTEGER s }`). Conversion helper lives at `src/KeePassKeyWin.Plugin/Crypto/EcdsaSigner.cs` (to be created in Phase 0.5).
 - [Imperial Violet — On signCount semantics](https://www.imperialviolet.org/2023/08/05/signature-counters.html)
 - [Yubico — PRF / hmac-secret CTAP2 deep dive](https://developers.yubico.com/WebAuthn/Concepts/PRF_Extension/CTAP2_HMAC_Secret_Deep_Dive.html) — reference for the post-v1 `hmac-secret`/`prf` extension.
 

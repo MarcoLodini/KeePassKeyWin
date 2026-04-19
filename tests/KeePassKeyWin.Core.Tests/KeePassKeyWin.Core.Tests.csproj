@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>KeePassKeyWin.Core.Tests</AssemblyName>
+    <RootNamespace>KeePassKeyWin.Core.Tests</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+    <PackageReference Include="xunit" Version="2.7.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.8">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj" />
+    <!-- KeePassStub provides KeePass.*, KeePassLib types for storage tests on Linux/CI -->
+    <ProjectReference Include="..\..\tests\TestSupport\KeePassStub\KeePassStub.csproj" />
+  </ItemGroup>
+
+  <!-- Include KeePassKeyWin.Plugin source files that the storage tests exercise directly -->
+  <ItemGroup>
+    <Compile Include="..\..\src\KeePassKeyWin.Plugin\Storage\KeePassPasskeyStore.cs" />
+  </ItemGroup>
+
+</Project>

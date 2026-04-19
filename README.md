@@ -1,4 +1,4 @@
-# PassKee
+# KeePassKeyWin
 
 KeePass 2.x plugin that turns KeePass into a first-class Windows passkey provider.
 
@@ -18,8 +18,8 @@ Pre-release. End-to-end passkey register and login work on Windows 11 25H2 (buil
 
 Two processes:
 
-- **`PassKee.Plugin`** — .NET Framework 4.8 KeePass plugin. Owns the vault and passkey storage. ECDsa key generation and assertion signing happen here; the private key never leaves this process.
-- **`PassKee.Provider`** — Rust MSIX-packaged sidecar. Implements the `IPluginAuthenticator` COM interface. Receives passkey operations from Windows, forwards to the plugin over a named pipe, encodes the response.
+- **`KeePassKeyWin.Plugin`** — .NET Framework 4.8 KeePass plugin. Owns the vault and passkey storage. ECDsa key generation and assertion signing happen here; the private key never leaves this process.
+- **`KeePassKeyWin.Provider`** — Rust MSIX-packaged sidecar. Implements the `IPluginAuthenticator` COM interface. Receives passkey operations from Windows, forwards to the plugin over a named pipe, encodes the response.
 
 The two-process split is forced by Windows: `IPluginAuthenticator` must be registered via an AppX manifest, and KeePass is an unpackaged .NET Framework app that cannot host a packaged COM server.
 
@@ -29,7 +29,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture.
 
 Deferred to future versions:
 
-- **Enterprise attestation / AAGUID allowlists.** PassKee uses `none` attestation with a fixed, randomly-generated project-wide AAGUID (`a97d1e2b-4c8f-4a3e-9bd6-5f82c1476e3d`) — stable across installs, but not per-install unique and not backed by an attestation certificate chain. Some enterprise RPs (Azure AD conditional access, some banks) enforce AAGUID allowlists of certified authenticators and will reject PassKee passkeys until/unless its AAGUID is added to their allowlist.
+- **Enterprise attestation / AAGUID allowlists.** KeePassKeyWin uses `none` attestation with a fixed, randomly-generated project-wide AAGUID (`a97d1e2b-4c8f-4a3e-9bd6-5f82c1476e3d`) — stable across installs, but not per-install unique and not backed by an attestation certificate chain. Some enterprise RPs (Azure AD conditional access, some banks) enforce AAGUID allowlists of certified authenticators and will reject KeePassKeyWin passkeys until/unless its AAGUID is added to their allowlist.
 - **`hmac-secret` / `prf` extension.** Used by a handful of advanced password-manager flows. Not required for mainstream passkey login.
 - **Multiple KeePass instances with different vaults.** v1 is single-instance-per-session. A second KeePass process is detected and stays passive.
 
@@ -57,13 +57,13 @@ Quick start:
 ### Plugin (net48, Windows only)
 
 ```powershell
-dotnet build src/PassKee.Plugin -f net48 /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+dotnet build src/KeePassKeyWin.Plugin -f net48 /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
 ```
 
 ### Harness (net8.0, cross-platform build, Windows execution)
 
 ```powershell
-dotnet build src/PassKee.Harness -c Release
+dotnet build src/KeePassKeyWin.Harness -c Release
 ```
 
 ### Unit tests (net8.0, Linux/macOS/Windows)

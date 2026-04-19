@@ -48,3 +48,9 @@ Thumbs.db
 # Repo-level build output
 /out/
 /dist/
+
+# Playwright MCP research-session artifacts (not shipped)
+.playwright-mcp/
+
+# Trademark research screenshots (not shipped)
+uspto-*.png

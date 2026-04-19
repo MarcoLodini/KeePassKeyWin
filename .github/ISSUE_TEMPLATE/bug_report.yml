@@ -1,14 +1,14 @@
 name: Bug report
-description: Report an issue with PassKee
+description: Report an issue with KeePassKeyWin
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for filing a bug. PassKee lives at the intersection of KeePass, Windows WebAuthn, and the browser — the more context you provide, the faster we can triage.
+        Thanks for filing a bug. KeePassKeyWin lives at the intersection of KeePass, Windows WebAuthn, and the browser — the more context you provide, the faster we can triage.
 
-        **Before filing**: PassKee requires Windows 11 24H2 build 26100.6725+. Older Windows versions are not supported and will be closed without investigation.
+        **Before filing**: KeePassKeyWin requires Windows 11 24H2 build 26100.6725+. Older Windows versions are not supported and will be closed without investigation.
 
   - type: input
     id: windows-version
@@ -28,9 +28,9 @@ body:
       required: true
 
   - type: input
-    id: passkee-version
+    id: keepasskeywin-version
     attributes:
-      label: PassKee version / commit
+      label: KeePassKeyWin version / commit
       description: Git SHA (first 7 chars) or release tag.
     validations:
       required: true
@@ -70,7 +70,7 @@ body:
       label: Logs
       description: |
         Attach any relevant logs. Helpful sources:
-          - PassKee provider: `%LOCALAPPDATA%\Packages\<PassKee package family name>\LocalState\`
+          - KeePassKeyWin provider: `%LOCALAPPDATA%\Packages\<KeePassKeyWin package family name>\LocalState\`
           - KeePass plugin log: `%APPDATA%\KeePass\` (if present)
           - Windows Event Viewer: Applications and Services Logs → Microsoft → Windows → WebAuthn
       render: shell

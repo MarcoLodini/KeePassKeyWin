@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  KeePassKeyWin Provider — MSIX Package Manifest
+
+  Placeholders to fill in before signing:
+    KEEPASSKEYWIN_PUBLISHER_PLACEHOLDER  — CN=<your cert subject>, e.g. CN=Marco Lodini, O=KeePassKeyWin, C=US
+    KEEPASSKEYWIN_VERSION_PLACEHOLDER    — package version, e.g. 0.0.1.0  (must be Major.Minor.Build.Revision)
+
+  CLSIDs:
+    IPluginAuthenticator IID/CLSID: {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+    This is the Microsoft-defined interface IID; it doubles as our COM server CLSID per the
+    Windows passkey plugin contract.
+
+  Threading model: STA (singleThreadedApartment), required by IPluginAuthenticator.
+
+  References:
+    https://learn.microsoft.com/en-us/windows/win32/webauthn/webauthn-portal
+    https://github.com/microsoft/webauthn/blob/master/pluginauthenticator.h
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap com rescap">
+
+  <!-- ── Identity ─────────────────────────────────────────────────────────── -->
+  <Identity
+    Name="KeePassKeyWin.Provider"
+    Publisher="CN=Marco Lodini, O=KeePassKeyWin, C=IT"
+    Version="0.0.1.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>KeePassKeyWin Passkey Provider</DisplayName>
+    <PublisherDisplayName>KeePassKeyWin Contributors</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>FIDO2 / WebAuthn passkey provider bridge for the KeePassKeyWin KeePass 2.x plugin.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 11 24H2 build 26100 = platform version 10.0.26100.0 -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.26100.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <!-- ── Capabilities ──────────────────────────────────────────────────────── -->
+  <Capabilities>
+    <!--
+      runFullTrust: required for COM in-process servers and named-pipe communication
+      with KeePass (a full-trust Win32 application).
+    -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <!-- ── Applications ──────────────────────────────────────────────────────── -->
+  <Applications>
+    <!--
+      keepasskeywin-provider.exe hosts an out-of-process COM class factory (STA).
+      The Windows WebAuthn host activates it via CoCreateInstance(CLSID_KeePassKeyWin,
+      CLSCTX_LOCAL_SERVER), passing -PluginActivated. Register KeePassKeyWin as a
+      passkey provider by running 'keepasskeywin-provider.exe register' post-install.
+    -->
+    <Application Id="KeePassKeyWinProvider" Executable="keepasskeywin-provider.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="KeePassKeyWin Provider"
+        Description="KeePassKeyWin passkey provider — runs as a COM in-process server, no UI."
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        BackgroundColor="transparent" />
+
+      <Extensions>
+        <!--
+          COM out-of-process server registration.
+
+          CLSID = IPluginAuthenticator IID = {d26bcf6f-b54c-43ff-9f06-d5bf148625f7}
+          The Windows WebAuthn host resolves the provider by this CLSID via
+          CLSCTX_LOCAL_SERVER (out-of-process), not CLSCTX_INPROC_SERVER.
+
+          Why ExeServer, not InProcessServer:
+            1. MSIX packages install to %ProgramFiles%\WindowsApps\<pkg>\ which
+               has ACLs that prevent non-package processes from loading DLLs
+               out-of-band. See com4:Extension Remarks: "in-process servers...
+               intended for use only by packages with external location".
+            2. The Microsoft PasskeyManager sample (the official reference
+               implementation of a plugin passkey provider) uses com:ExeServer.
+            3. The Plugin Authenticator API activates the provider via standard
+               out-of-process COM; the EXE hosts an STA class factory for the
+               duration of the activation.
+
+          Single executable (keepasskeywin-provider.exe) serves two roles:
+            - Regular launch: CLI smoke tests (no args, or `smoke`, etc.)
+            - COM activation: Windows passes `-PluginActivated` — EXE enters
+              class-factory mode and registers the IPluginAuthenticator impl
+              on an STA before pumping messages. (Class-factory wiring lands
+              in Phase 2.2; Phase 2.1 only proves the MSIX registers cleanly.)
+
+          Refs:
+            https://learn.microsoft.com/uwp/schemas/appxpackage/uapmanifestschema/element-com-exeserver
+            https://learn.microsoft.com/samples/microsoft/windows-classic-samples/passkeymanager/
+        -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer
+                Executable="keepasskeywin-provider.exe"
+                Arguments="-PluginActivated"
+                DisplayName="KeePassKeyWin Passkey Provider">
+              <!-- ThreadingModel is NOT a valid attribute on com:Class within
+                   com:ExeServer — makeappx rejects it (schema error C00CE015).
+                   The MSIX windows.comServer schema puts ThreadingModel on
+                   the in-proc DllPath element only. For ExeServers, the
+                   server process declares its apartment via CoInitializeEx at
+                   startup (we use COINIT_APARTMENTTHREADED in run_com_server). -->
+              <com:Class
+                Id="d26bcf6f-b54c-43ff-9f06-d5bf148625f7"
+                DisplayName="KeePassKeyWin Passkey Provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+</Package>

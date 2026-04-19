@@ -1,8 +1,8 @@
-# Contributing to PassKee
+# Contributing to KeePassKeyWin
 
-Thanks for your interest in PassKee! This guide covers everything you need to build, test, and submit changes.
+Thanks for your interest in KeePassKeyWin! This guide covers everything you need to build, test, and submit changes.
 
-PassKee is pre-1.0 software and the surface area is unusual — a .NET Framework 4.8 KeePass plugin, a Rust MSIX-packaged COM server, a named-pipe IPC protocol, and live Windows Plug-in Authenticator integration. Expect the build to need more than "clone and go". This document tries to make that cost explicit.
+KeePassKeyWin is pre-1.0 software and the surface area is unusual — a .NET Framework 4.8 KeePass plugin, a Rust MSIX-packaged COM server, a named-pipe IPC protocol, and live Windows Plug-in Authenticator integration. Expect the build to need more than "clone and go". This document tries to make that cost explicit.
 
 ## Before you start
 
@@ -14,7 +14,7 @@ PassKee is pre-1.0 software and the surface area is unusual — a .NET Framework
 
 ## Licensing
 
-PassKee is **GPL-3.0-or-later** (see [`LICENSE`](LICENSE)). Contributions are accepted under the same license. By opening a pull request you certify that you have the right to license your contribution under GPL-3.0-or-later.
+KeePassKeyWin is **GPL-3.0-or-later** (see [`LICENSE`](LICENSE)). Contributions are accepted under the same license. By opening a pull request you certify that you have the right to license your contribution under GPL-3.0-or-later.
 
 Third-party code must be compatible with GPL-3.0-or-later and attributed in [`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES).
 
@@ -31,7 +31,7 @@ Third-party code must be compatible with GPL-3.0-or-later and attributed in [`TH
 ### Toolchain
 
 - **.NET SDK 8.0** — build + test driver for both csproj targets. `dotnet --version` must report `8.x`. Note that the plugin itself targets `net48` at runtime (KeePass hosts it), while the harness and tests target `net8.0`.
-- **Rust stable** (current MSRV: whatever `rustup default stable` gives you). The sidecar lives in `src/PassKee.Provider/`.
+- **Rust stable** (current MSRV: whatever `rustup default stable` gives you). The sidecar lives in `src/KeePassKeyWin.Provider/`.
 - **Windows SDK 10.0.26100.7175+** — only needed if you build the MSIX or run live validation on Windows.
 - **`cargo xwin`** — only needed to cross-compile the Windows sidecar from Linux/WSL. Install with `cargo install cargo-xwin`; also needs the `lld` and `clang` system packages.
 - **KeePass 2.58+** — only needed for live validation; never for tests.
@@ -41,19 +41,19 @@ Third-party code must be compatible with GPL-3.0-or-later and attributed in [`TH
 ### .NET (cross-platform)
 
 ```bash
-dotnet restore PassKee.sln
-dotnet build PassKee.sln --no-restore
+dotnet restore KeePassKeyWin.sln
+dotnet build KeePassKeyWin.sln --no-restore
 ```
 
-The plugin assembly (`src/PassKee.Plugin`) targets `net48` and references KeePass's `KeePass.exe` as an assembly reference. On Linux the reference is stubbed via `KeePassDir` MSBuild properties; for a real install on Windows you need an actual KeePass install path:
+The plugin assembly (`src/KeePassKeyWin.Plugin`) targets `net48` and references KeePass's `KeePass.exe` as an assembly reference. On Linux the reference is stubbed via `KeePassDir` MSBuild properties; for a real install on Windows you need an actual KeePass install path:
 
 ```powershell
-dotnet build src/PassKee.Plugin -f net48 /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+dotnet build src/KeePassKeyWin.Plugin -f net48 /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
 ```
 
 ### Rust sidecar
 
-From `src/PassKee.Provider/`:
+From `src/KeePassKeyWin.Provider/`:
 
 ```bash
 cargo build                       # host-native (Linux/macOS) — tests only
@@ -73,7 +73,7 @@ CI runs both of these on Ubuntu on every PR. Run them locally before pushing.
 ### .NET unit tests
 
 ```bash
-dotnet test PassKee.sln --nologo
+dotnet test KeePassKeyWin.sln --nologo
 ```
 
 (CI adds `--no-restore` because it runs an explicit restore step first; for a cold local run, let `dotnet test` restore implicitly.)
@@ -83,7 +83,7 @@ Runs cross-platform. Exercises CBOR encoding, COSE key layout, authData construc
 ### Rust unit + integration tests
 
 ```bash
-cd src/PassKee.Provider
+cd src/KeePassKeyWin.Provider
 cargo test --all-targets
 ```
 
@@ -116,7 +116,7 @@ Call the Windows build, browser, and RP out in your PR description.
 ## Commits
 
 - **Conventional Commits** style — `feat(scope): …`, `fix(scope): …`, `chore(scope): …`, `docs(scope): …`. Look at recent history (`git log --oneline`) for examples.
-- **Signed commits are preferred** (GPG or SSH). Not a hard requirement, but a strong norm given what PassKee brokers.
+- **Signed commits are preferred** (GPG or SSH). Not a hard requirement, but a strong norm given what KeePassKeyWin brokers.
 - **Small, focused commits** beat a single mega-commit. Squash-merge is the default strategy at merge time, so the commit boundary within a PR is for review ergonomics.
 - **No secrets, no credentials.** `.env`, `.pfx`, `.snk`, `cert-thumbprint.txt`, vault files — never committed. The repo root `.gitignore` covers the usual suspects; double-check your diff.
 
@@ -127,7 +127,7 @@ Call the Windows build, browser, and RP out in your PR description.
 3. If your change is runtime-behavior (plugin, sidecar, IPC, COM), include a live-validation note in the PR description — Windows build, browser, RP, and what flow you exercised.
 4. Fill out the PR template. The "Test plan" section is not optional.
 5. Ensure CI is green. CI runs on `ubuntu-latest` and covers both stacks; a red CI will block review.
-6. Expect review comments. PassKee has narrow tolerances — a COSE key with the wrong integer type, a CTAP2 response with text keys instead of integer keys, a signCount written asynchronously — all of these have produced silent runtime failures in the past. Reviewers will push on this kind of detail; it is not personal.
+6. Expect review comments. KeePassKeyWin has narrow tolerances — a COSE key with the wrong integer type, a CTAP2 response with text keys instead of integer keys, a signCount written asynchronously — all of these have produced silent runtime failures in the past. Reviewers will push on this kind of detail; it is not personal.
 
 ## Landmines
 

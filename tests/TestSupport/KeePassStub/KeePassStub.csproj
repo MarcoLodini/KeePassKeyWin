@@ -8,7 +8,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-    <Description>Minimal KeePass type stubs for building PassKee.Plugin on non-Windows CI where KeePass.exe is unavailable.</Description>
+    <Description>Minimal KeePass type stubs for building KeePassKeyWin.Plugin on non-Windows CI where KeePass.exe is unavailable.</Description>
   </PropertyGroup>
 
   <!-- WinForms UI stubs for KeePassUiTypes.cs — net48 only -->

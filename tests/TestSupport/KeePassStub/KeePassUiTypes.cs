@@ -1,5 +1,5 @@
 #if NET48
-// Minimal stubs for KeePass WinForms UI types needed to compile PassKee.Plugin
+// Minimal stubs for KeePass WinForms UI types needed to compile KeePassKeyWin.Plugin
 // on Linux/CI where KeePass.exe is not present. net48-only: WinForms unavailable on net8.0.
 
 using System;

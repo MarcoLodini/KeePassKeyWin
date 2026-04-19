@@ -1,18 +1,18 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Sign PassKee.Provider.msix with a PFX certificate using signtool.
+    Sign KeePassKeyWin.Provider.msix with a PFX certificate using signtool.
 
 .DESCRIPTION
     Purpose     : Verify that the PFX Subject exactly matches the manifest Publisher
                   (byte-for-byte), then sign the MSIX package with signtool.
-    Prerequisites: out\PassKee.Dev.pfx (produced by ensure-dev-cert.ps1)
-                  out\PassKee.Provider.msix (produced by build-msix.ps1)
+    Prerequisites: out\KeePassKeyWin.Dev.pfx (produced by ensure-dev-cert.ps1)
+                  out\KeePassKeyWin.Provider.msix (produced by build-msix.ps1)
                   Windows SDK signtool.exe reachable via PATH or Windows Kits.
-    Inputs      : -PfxPath     (default: out\PassKee.Dev.pfx)
+    Inputs      : -PfxPath     (default: out\KeePassKeyWin.Dev.pfx)
                   -PfxPassword (SecureString; prompted if absent)
-                  -MsixPath    (default: out\PassKee.Provider.msix)
-    Outputs     : out\PassKee.Provider.msix (signed in-place)
+                  -MsixPath    (default: out\KeePassKeyWin.Provider.msix)
+    Outputs     : out\KeePassKeyWin.Provider.msix (signed in-place)
     Exit codes  : 0 = PASS, 1 = FAIL
 
     IMPORTANT — we NEVER use signtool /a (auto-select). On a dev machine with
@@ -39,19 +39,19 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrEmpty($PfxPath)) {
-    $PfxPath = Join-Path $repoRoot 'out\PassKee.Dev.pfx'
+    $PfxPath = Join-Path $repoRoot 'out\KeePassKeyWin.Dev.pfx'
 } elseif (-not [System.IO.Path]::IsPathRooted($PfxPath)) {
     $PfxPath = Join-Path $repoRoot $PfxPath
 }
 
 if ([string]::IsNullOrEmpty($MsixPath)) {
-    $MsixPath = Join-Path $repoRoot 'out\PassKee.Provider.msix'
+    $MsixPath = Join-Path $repoRoot 'out\KeePassKeyWin.Provider.msix'
 } elseif (-not [System.IO.Path]::IsPathRooted($MsixPath)) {
     $MsixPath = Join-Path $repoRoot $MsixPath
 }
 
 # Manifest lives alongside the appx assets.
-$manifestPath = Join-Path $repoRoot 'src\PassKee.Provider\appx\Package.appxmanifest'
+$manifestPath = Join-Path $repoRoot 'src\KeePassKeyWin.Provider\appx\Package.appxmanifest'
 
 # ---------------------------------------------------------------------------
 # Prompt for password if not supplied

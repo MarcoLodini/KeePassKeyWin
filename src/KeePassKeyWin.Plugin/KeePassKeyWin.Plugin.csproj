@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>KeePassKeyWin</AssemblyName>
+    <RootNamespace>KeePassKeyWin</RootNamespace>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <Version>0.0.1</Version>
+    <Authors>Marco Lodini and contributors</Authors>
+    <!-- <Product> becomes the Win32 VERSIONINFO ProductName resource baked into
+         the compiled DLL. KeePass 2.x's PluginManager reads that field via
+         FileVersionInfo.GetVersionInfo(...).ProductName during the plugin scan
+         and silently SKIPS any DLL whose ProductName is not exactly
+         "KeePass Plugin" — no log, no dialog, no event-log entry, no PluginCache
+         entry. Without this exact value the DLL never reaches the CLR loader
+         and Initialize() never runs. Do NOT change. -->
+    <Product>KeePass Plugin</Product>
+    <Description>KeePass 2.x plugin — FIDO2 / WebAuthn passkey storage and Windows passkey provider bridge.</Description>
+    <Copyright>Copyright (C) 2026 Marco Lodini and contributors. Licensed under GPL-3.0-or-later.</Copyright>
+  </PropertyGroup>
+
+  <!--
+    Production build: set $(KeePassDir) to your KeePass install directory.
+        dotnet build /p:KeePassDir="C:\Program Files\KeePass Password Safe 2"
+    Linux/CI build: leave $(KeePassDir) unset — the stub assembly is used instead.
+  -->
+  <ItemGroup Condition="'$(KeePassDir)' != ''">
+    <Reference Include="KeePass">
+      <HintPath>$(KeePassDir)\KeePass.exe</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Private=false: the stub KeePass.dll is compile-only. It must NEVER land
+       in the output directory, because at runtime KeePass.dll has to resolve
+       to the running KeePass.exe (weak-named "KeePass, Version=1.0.0.0"
+       reference is satisfied by the running exe). If the stub DLL is in the
+       same Plugins\ folder, the CLR probing path loads it instead, producing
+       two distinct "KeePass" assemblies in the AppDomain — KeePassKeyWinExt's base
+       resolves to the stub's `Plugin`, KeePass's loader compares against the
+       real `Plugin`, IsSubclassOf returns false, and KeePass silently skips
+       our plugin. Same class of silent-reject bug as the ProductName gate. -->
+  <ItemGroup Condition="'$(KeePassDir)' == ''">
+    <ProjectReference Include="..\..\tests\TestSupport\KeePassStub\KeePassStub.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- WinForms: required for UI/MenuEntry, UI/AboutDialog, UI/PasskeyEntryDecorator -->
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj" />
+  </ItemGroup>
+
+</Project>

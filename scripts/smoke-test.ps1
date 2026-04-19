@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs the PassKee Phase 0.5 smoke test against a running KeePass instance.
+    Runs the KeePassKeyWin Phase 0.5 smoke test against a running KeePass instance.
 
 .DESCRIPTION
     Automatically discovers the KeePass session ID and HKCU handshake nonce,
@@ -48,10 +48,10 @@ Write-Host "[smoke-test] KeePass PID $($keepass.Id), session $sessionId"
 if ([string]::IsNullOrEmpty($Nonce)) {
     $regValue = $null
     try {
-        $regValue = (Get-ItemProperty -Path "HKCU:\Software\PassKee" -Name "HandshakeNonce" -ErrorAction Stop).HandshakeNonce
+        $regValue = (Get-ItemProperty -Path "HKCU:\Software\KeePassKeyWin" -Name "HandshakeNonce" -ErrorAction Stop).HandshakeNonce
     } catch {
-        throw "Handshake nonce not found in HKCU:\Software\PassKee\HandshakeNonce. " +
-              "Is the PassKee plugin loaded and a .kdbx open in KeePass?"
+        throw "Handshake nonce not found in HKCU:\Software\KeePassKeyWin\HandshakeNonce. " +
+              "Is the KeePassKeyWin plugin loaded and a .kdbx open in KeePass?"
     }
     if ([string]::IsNullOrWhiteSpace($regValue)) {
         throw "HandshakeNonce registry value is empty. Restart KeePass to regenerate it."
@@ -61,7 +61,7 @@ if ([string]::IsNullOrEmpty($Nonce)) {
 }
 
 # --- Locate harness ---
-$harnessProj = Join-Path $repoRoot "src\PassKee.Harness\PassKee.Harness.csproj"
+$harnessProj = Join-Path $repoRoot "src\KeePassKeyWin.Harness\KeePassKeyWin.Harness.csproj"
 if (-not (Test-Path $harnessProj)) {
     throw "Harness project not found at '$harnessProj'. Run from the repo root scripts\ directory."
 }

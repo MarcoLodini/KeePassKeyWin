@@ -1,11 +1,11 @@
-# PassKee IPC Protocol
+# KeePassKeyWin IPC Protocol
 
 JSON-RPC 2.0 over a named pipe. Transport and framing details below.
 Method handler details for the credential operations are documented in each method's section.
 
 ## Transport
 
-- **Pipe name**: `\\.\pipe\PassKee.<sessionId>` where `sessionId` = `Process.GetCurrentProcess().SessionId`
+- **Pipe name**: `\\.\pipe\KeePassKeyWin.<sessionId>` where `sessionId` = `Process.GetCurrentProcess().SessionId`
 - **Mode**: byte-stream, in/out, single connection (single-instance v1)
 - **ACL**: restricted to the current user's Windows SID (`PipeSecurity` with `FullControl` for the process owner only)
 - **Encoding**: UTF-8, no BOM
@@ -14,7 +14,7 @@ Method handler details for the credential operations are documented in each meth
 ## Request format (client → plugin)
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"passkee.hello","params":{...}}
+{"jsonrpc":"2.0","id":1,"method":"keepasskeywin.hello","params":{...}}
 ```
 
 - `id`: integer or string; required for all non-notification requests
@@ -42,32 +42,32 @@ Error:
 | -32601 | MethodNotFound | Method name not recognised |
 | -32602 | InvalidParams | Method params missing or wrong type |
 | -32603 | InternalError | Unexpected server-side exception |
-| -32000 | HandshakeRequired | Request received before `passkee.hello` completed |
+| -32000 | HandshakeRequired | Request received before `keepasskeywin.hello` completed |
 | -32001 | HandshakeInvalid | Nonce mismatch, already-used nonce, or wrong package family |
 | -32010 | VaultLocked | KeePass vault is locked or closed |
 | -32020 | CredentialNotFound | credentialId not found in "Passkeys" group |
 
 ## Handshake
 
-The **first** request on every connection must be `passkee.hello`. All other methods return `-32000 HandshakeRequired` until the handshake succeeds.
+The **first** request on every connection must be `keepasskeywin.hello`. All other methods return `-32000 HandshakeRequired` until the handshake succeeds.
 
-### `passkee.hello`
+### `keepasskeywin.hello`
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "passkee.hello",
+  "method": "keepasskeywin.hello",
   "params": {
-    "clientPkgFamilyName": "PassKee.Provider_rh4edrm0by30m",
+    "clientPkgFamilyName": "KeePassKeyWin.Provider_rh4edrm0by30m",
     "handshakeNonce": "<64-char hex nonce>"
   }
 }
 ```
 
 **Validation**:
-1. `clientPkgFamilyName` must equal `PassKee.Provider_rh4edrm0by30m` exactly.
-2. `handshakeNonce` must match the value stored at `HKEY_CURRENT_USER\Software\PassKee\HandshakeNonce` (REG_SZ).
+1. `clientPkgFamilyName` must equal `KeePassKeyWin.Provider_rh4edrm0by30m` exactly.
+2. `handshakeNonce` must match the value stored at `HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce` (REG_SZ).
 3. The nonce is deleted from the registry on first successful use (single-use).
 
 **Success response**:
@@ -83,11 +83,11 @@ Documented here as stubs; full parameter and result schemas are added by plugin-
 
 | Method | Direction | Purpose |
 |---|---|---|
-| `passkee.createPasskey` | sidecar → plugin | Generate + store a new ES256 passkey |
-| `passkee.listCredentials` | sidecar → plugin | Enumerate credentials for a given rpId |
-| `passkee.signAssertion` | sidecar → plugin | Sign `authData \|\| clientDataHash` with the stored private key |
-| `passkee.deleteCredential` | sidecar → plugin | Remove a passkey by credentialId |
-| `passkee.enumerateForSync` | sidecar → plugin | Return full credential list for Windows Settings sync |
+| `keepasskeywin.createPasskey` | sidecar → plugin | Generate + store a new ES256 passkey |
+| `keepasskeywin.listCredentials` | sidecar → plugin | Enumerate credentials for a given rpId |
+| `keepasskeywin.signAssertion` | sidecar → plugin | Sign `authData \|\| clientDataHash` with the stored private key |
+| `keepasskeywin.deleteCredential` | sidecar → plugin | Remove a passkey by credentialId |
+| `keepasskeywin.enumerateForSync` | sidecar → plugin | Return full credential list for Windows Settings sync |
 
 Until plugin-core wires these up, each returns `-32601 MethodNotFound`.
 
@@ -96,11 +96,11 @@ Until plugin-core wires these up, each returns `-32601 MethodNotFound`.
 ```
 Plugin Initialize()
   └─ RegistryNonceStore.Initialize()
-       └─ Writes random 32-byte hex nonce to HKCU\Software\PassKee\HandshakeNonce
+       └─ Writes random 32-byte hex nonce to HKCU\Software\KeePassKeyWin\HandshakeNonce
 
 Sidecar launch
   └─ Reads nonce from HKCU
-  └─ Sends passkee.hello{clientPkgFamilyName, handshakeNonce}
+  └─ Sends keepasskeywin.hello{clientPkgFamilyName, handshakeNonce}
 
 Plugin receives hello
   └─ Validates pkg family + nonce
@@ -113,7 +113,7 @@ Plugin Terminate()
 
 ## Connection lifecycle
 
-1. Plugin starts pipe server on `\\.\pipe\PassKee.<sessionId>`.
+1. Plugin starts pipe server on `\\.\pipe\KeePassKeyWin.<sessionId>`.
 2. If another plugin instance already owns the pipe name, the second instance logs a warning and stays passive.
 3. Sidecar connects; plugin accepts and spawns a dedicated `ServeConnection` loop.
 4. Client sends one request per line; plugin replies with one response line.

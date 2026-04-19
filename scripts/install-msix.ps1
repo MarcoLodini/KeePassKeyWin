@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Install PassKee.Provider.msix and verify the resulting AppX package registration.
+    Install KeePassKeyWin.Provider.msix and verify the resulting AppX package registration.
 
 .DESCRIPTION
     Purpose     : Sideload the signed MSIX package via Add-AppxPackage, then
@@ -10,11 +10,11 @@
     Prerequisites: The MSIX must already be signed (sign-msix.ps1).
                   The signing cert's public key must be in Cert:\LocalMachine\TrustedPeople
                   (ensure-dev-cert.ps1 installs it there).
-    Inputs      : -MsixPath (default: out\PassKee.Provider.msix)
+    Inputs      : -MsixPath (default: out\KeePassKeyWin.Provider.msix)
     Outputs     : Console output confirming PackageFamilyName (needed for Phase 2.2)
     Exit codes  : 0 = PASS, 1 = FAIL
 
-    Rollback: Remove-AppxPackage (Get-AppxPackage -Name 'PassKee.Provider').PackageFullName
+    Rollback: Remove-AppxPackage (Get-AppxPackage -Name 'KeePassKeyWin.Provider').PackageFullName
 #>
 [CmdletBinding()]
 param(
@@ -30,14 +30,14 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ([string]::IsNullOrEmpty($MsixPath)) {
-    $MsixPath = Join-Path $repoRoot 'out\PassKee.Provider.msix'
+    $MsixPath = Join-Path $repoRoot 'out\KeePassKeyWin.Provider.msix'
 } elseif (-not [System.IO.Path]::IsPathRooted($MsixPath)) {
     $MsixPath = Join-Path $repoRoot $MsixPath
 }
 
-$expectedPublisher = 'CN=Marco Lodini, O=PassKee, C=IT'
+$expectedPublisher = 'CN=Marco Lodini, O=KeePassKeyWin, C=IT'
 $expectedVersion   = '0.0.1.0'
-$packageName       = 'PassKee.Provider'
+$packageName       = 'KeePassKeyWin.Provider'
 
 # ---------------------------------------------------------------------------
 # Step 1/3 — Assert MSIX exists

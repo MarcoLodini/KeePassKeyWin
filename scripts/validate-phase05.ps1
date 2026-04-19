@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Unattended end-to-end validation of PassKee Phase 0.5 (Steps 1-5 + 7).
+    Unattended end-to-end validation of KeePassKeyWin Phase 0.5 (Steps 1-5 + 7).
 
 .DESCRIPTION
     Automates the steps in docs/WINDOWS_VALIDATION.md that do not require human
@@ -10,16 +10,16 @@
     What this script does:
       1. Pre-flight: verifies KeePass, .NET 8 SDK, .NET Framework 4.8, and
          both project files.
-      2. Builds PassKee.Plugin (net48) + PassKee.Harness (net8 Release).
-      3. Copies PassKee.dll + Newtonsoft.Json.dll into KeePass Plugins\.
+      2. Builds KeePassKeyWin.Plugin (net48) + KeePassKeyWin.Harness (net8 Release).
+      3. Copies KeePassKeyWin.dll + Newtonsoft.Json.dll into KeePass Plugins\.
       4. Opens a throwaway .kdbx from scripts\fixtures\template.kdbx (see note
          below), assigning a fresh random password for the session.
       5. Launches KeePass in the background against that vault.
-      6. Polls HKCU:\Software\PassKee\HandshakeNonce until the plugin writes it
+      6. Polls HKCU:\Software\KeePassKeyWin\HandshakeNonce until the plugin writes it
          (timeout: $TimeoutSec seconds).
       7. (Step 7b removed in Phase 2.1) The harness --smoke mode no longer requires
          a live Chrome CDP target; pipe-only operations are used throughout.
-      8. Runs PassKee.Harness in --smoke mode: createPasskey -> listCredentials
+      8. Runs KeePassKeyWin.Harness in --smoke mode: createPasskey -> listCredentials
          -> signAssertion -> deleteCredential.
       9. (Step 7) Verifies HKCU HandshakeNonce is cleared post-handshake.
      10. Cleans up: kills KeePass, deletes temp vault (unless -KeepTempFiles).
@@ -96,14 +96,14 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 # because UIAutomationClient.dll requires a STA thread and is fragile from
 # PowerShell.  These P/Invoke signatures are PS 5.1 compatible.
 
-if (-not ([System.Management.Automation.PSTypeName]'PassKee.WinEnum').Type) {
+if (-not ([System.Management.Automation.PSTypeName]'KeePassKeyWin.WinEnum').Type) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace PassKee {
+namespace KeePassKeyWin {
     public static class WinEnum {
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -153,7 +153,7 @@ function Get-KeePassWindows {
     # $Pid is a PowerShell automatic (read-only) — use $ProcessId instead.
     param([int] $ProcessId)
     try {
-        $wins = [PassKee.WinEnum]::GetWindowsForPid($ProcessId)
+        $wins = [KeePassKeyWin.WinEnum]::GetWindowsForPid($ProcessId)
         return $wins
     } catch {
         return @()
@@ -308,9 +308,9 @@ function Emit-DiagBundle {
     }
 
     # 2. Registry state
-    Write-Host "[diag] Registry HKCU:\Software\PassKee:" -ForegroundColor Yellow
+    Write-Host "[diag] Registry HKCU:\Software\KeePassKeyWin:" -ForegroundColor Yellow
     try {
-        $regKey = Get-ItemProperty -Path "HKCU:\Software\PassKee" -ErrorAction SilentlyContinue
+        $regKey = Get-ItemProperty -Path "HKCU:\Software\KeePassKeyWin" -ErrorAction SilentlyContinue
         if ($null -eq $regKey) {
             Write-Host "  (key does not exist)"
         } else {
@@ -480,16 +480,16 @@ function Emit-DiagBundle {
     if ($null -eq $fusionEntries -or $fusionEntries.Count -eq 0) {
         Write-Host "  (no fusion log entries captured — either no binds during run, or Fusion logging wasn't enabled)"
     } else {
-        # Filter to entries that mention PassKee specifically (or show failures).
+        # Filter to entries that mention KeePassKeyWin specifically (or show failures).
         # The full log is often huge; this keeps the bundle focused.
         $interesting = @($fusionEntries | Where-Object {
-            $_.Text -match 'PassKee' -or $_.Text -match 'FAILED' -or $_.Text -match 'error'
+            $_.Text -match 'KeePassKeyWin' -or $_.Text -match 'FAILED' -or $_.Text -match 'error'
         })
         if ($interesting.Count -eq 0) {
-            Write-Host "  ($($fusionEntries.Count) bind(s) captured; none match PassKee / failure. First 3 shown):"
+            Write-Host "  ($($fusionEntries.Count) bind(s) captured; none match KeePassKeyWin / failure. First 3 shown):"
             $interesting = $fusionEntries | Select-Object -First 3
         } else {
-            Write-Host "  ($($interesting.Count) of $($fusionEntries.Count) bind(s) relate to PassKee or failed):"
+            Write-Host "  ($($interesting.Count) of $($fusionEntries.Count) bind(s) relate to KeePassKeyWin or failed):"
         }
         foreach ($e in $interesting) {
             Write-Host "  --- $($e.File) ---" -ForegroundColor Yellow
@@ -505,7 +505,7 @@ function Emit-DiagBundle {
 # ---------------------------------------------------------------------------
 
 Write-Host ""
-Write-Host "[validator] ===== PassKee Phase 0.5 Validator =====" -ForegroundColor Cyan
+Write-Host "[validator] ===== KeePassKeyWin Phase 0.5 Validator =====" -ForegroundColor Cyan
 Write-Host "[validator] KeePassDir : $KeePassDir"
 Write-Host "[validator] TimeoutSec : $TimeoutSec"
 Write-Host "[validator] DryRun     : $DryRun"
@@ -541,12 +541,12 @@ $netfxOk = ($null -ne $ndpRelease) -and ($ndpRelease -ge 528040)
 $allOk = $allOk -and (Write-Check ".NET Framework 4.8 (registry Release >= 528040)" $netfxOk $(if ($null -ne $ndpRelease) { "(Release=$ndpRelease)" } else { "(key missing)" }))
 
 # 1d. Plugin project
-$pluginCsproj = Join-Path $repoRoot "src\PassKee.Plugin\PassKee.Plugin.csproj"
+$pluginCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Plugin\KeePassKeyWin.Plugin.csproj"
 $ok = Test-Path $pluginCsproj
 $allOk = $allOk -and (Write-Check "Plugin source ($pluginCsproj)" $ok)
 
 # 1e. Harness project
-$harnessCsproj = Join-Path $repoRoot "src\PassKee.Harness\PassKee.Harness.csproj"
+$harnessCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Harness\KeePassKeyWin.Harness.csproj"
 $ok = Test-Path $harnessCsproj
 $allOk = $allOk -and (Write-Check "Harness source ($harnessCsproj)" $ok)
 
@@ -590,20 +590,20 @@ Write-Host ""
 Write-Host "[validator] --- Step 3: Build ---"
 
 # When the repo lives under \\wsl.localhost\... a single `dotnet build` of the
-# plugin races against SMB/9P cache coherence: PassKee.Core finishes writing
-# PassKee.Core.dll, the in-process MSBuild graph walker immediately moves to
+# plugin races against SMB/9P cache coherence: KeePassKeyWin.Core finishes writing
+# KeePassKeyWin.Core.dll, the in-process MSBuild graph walker immediately moves to
 # the Plugin's csc task, and csc opens the path via the SMB redirector which
 # hasn't yet surfaced the new file (CS0006 "Metadata file could not be found").
 # Split the build into two separate `dotnet` invocations with a visibility
 # poll between them so the first process exits (flushing file handles) and
 # the SMB cache settles before the second process tries to reference the DLL.
-$passKeeCoreCsproj = Join-Path $repoRoot "src\PassKee.Core\PassKee.Core.csproj"
-$passKeeCoreDll    = Join-Path $repoRoot "src\PassKee.Core\bin\Release\net48\PassKee.Core.dll"
+$passKeeCoreCsproj = Join-Path $repoRoot "src\KeePassKeyWin.Core\KeePassKeyWin.Core.csproj"
+$passKeeCoreDll    = Join-Path $repoRoot "src\KeePassKeyWin.Core\bin\Release\net48\KeePassKeyWin.Core.dll"
 
-Write-Host "[validator] Building PassKee.Core (net48, Release)..."
+Write-Host "[validator] Building KeePassKeyWin.Core (net48, Release)..."
 & dotnet build $passKeeCoreCsproj -f net48 -c Release --nologo
 if ($LASTEXITCODE -ne 0) {
-    Fail "PassKee.Core build failed (exit $LASTEXITCODE)."
+    Fail "KeePassKeyWin.Core build failed (exit $LASTEXITCODE)."
 }
 
 # Poll until Windows can see the freshly-written Core DLL. Test-Path forces a
@@ -615,11 +615,11 @@ while ((Get-Date) -lt $coreDllDeadline) {
     Start-Sleep -Milliseconds 200
 }
 if (-not (Test-Path $passKeeCoreDll)) {
-    Fail "PassKee.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows filesystem sync stall)."
+    Fail "KeePassKeyWin.Core.dll did not become visible at $passKeeCoreDll within 15s (WSL<->Windows filesystem sync stall)."
 }
-Write-Host "[validator] PassKee.Core output visible: OK"
+Write-Host "[validator] KeePassKeyWin.Core output visible: OK"
 
-Write-Host "[validator] Building PassKee.Plugin (net48, Release)..."
+Write-Host "[validator] Building KeePassKeyWin.Plugin (net48, Release)..."
 $buildPluginArgs = @(
     "build", $pluginCsproj,
     "-f", "net48",
@@ -630,14 +630,14 @@ $buildPluginArgs = @(
 )
 & dotnet @buildPluginArgs
 if ($LASTEXITCODE -ne 0) {
-    Fail "PassKee.Plugin build failed (exit $LASTEXITCODE)."
+    Fail "KeePassKeyWin.Plugin build failed (exit $LASTEXITCODE)."
 }
 Write-Host "[validator] Plugin build: OK"
 
-Write-Host "[validator] Building PassKee.Harness (net8, Release)..."
+Write-Host "[validator] Building KeePassKeyWin.Harness (net8, Release)..."
 & dotnet build $harnessCsproj -c Release --nologo
 if ($LASTEXITCODE -ne 0) {
-    Fail "PassKee.Harness build failed (exit $LASTEXITCODE)."
+    Fail "KeePassKeyWin.Harness build failed (exit $LASTEXITCODE)."
 }
 Write-Host "[validator] Harness build: OK"
 
@@ -654,16 +654,16 @@ if (-not (Test-Path $pluginDir)) {
     New-Item -ItemType Directory -Path $pluginDir -Force | Out-Null
 }
 
-$srcDir = Join-Path $repoRoot "src\PassKee.Plugin\bin\Release\net48"
+$srcDir = Join-Path $repoRoot "src\KeePassKeyWin.Plugin\bin\Release\net48"
 
 # Purge any stale KeePass.dll/pdb stub files left behind by a previous Linux
-# (KeePassStub) build. Current PassKee.Plugin.csproj has <Private>false</Private>
+# (KeePassStub) build. Current KeePassKeyWin.Plugin.csproj has <Private>false</Private>
 # on the KeePassStub ProjectReference so NEW builds won't produce a stub in
 # the output dir, but the file can linger from an earlier build that didn't
-# have that flag. Deploying it alongside PassKee.dll loads a second "KeePass"
+# have that flag. Deploying it alongside KeePassKeyWin.dll loads a second "KeePass"
 # assembly (v1.0.0.0, unsigned) into KeePass's AppDomain; the CLR probing
-# path picks it up to satisfy PassKee.dll's weak-named KeePass reference and
-# PassKeeExt.BaseType resolves to the stub's `Plugin`, not the real one.
+# path picks it up to satisfy KeePassKeyWin.dll's weak-named KeePass reference and
+# KeePassKeyWinExt.BaseType resolves to the stub's `Plugin`, not the real one.
 # KeePass's `IsSubclassOf(typeof(real Plugin))` then returns false and the
 # plugin is silently skipped — same class of silent-reject bug as the
 # VERSIONINFO ProductName gate, so we purge defensively.
@@ -675,8 +675,8 @@ foreach ($stale in @("KeePass.dll", "KeePass.pdb")) {
     }
 }
 
-# Copy every DLL from the plugin build output. PassKee.dll depends on
-# PassKee.Core.dll, Newtonsoft.Json.dll, and System.Memory's transitive
+# Copy every DLL from the plugin build output. KeePassKeyWin.dll depends on
+# KeePassKeyWin.Core.dll, Newtonsoft.Json.dll, and System.Memory's transitive
 # polyfill family (System.Buffers, System.Numerics.Vectors,
 # System.Runtime.CompilerServices.Unsafe); missing any of them makes KeePass
 # silently reject the plugin at load time. Wildcard-copy covers future deps.
@@ -702,19 +702,19 @@ foreach ($dll in $dlls) {
 Write-Host "[validator] Plugin files installed: OK ($($dlls.Count) DLL(s))"
 
 # ---------------------------------------------------------------------------
-# Step 4b — Reflection probe: verify PassKee.PassKeeExt is discoverable
+# Step 4b — Reflection probe: verify KeePassKeyWin.KeePassKeyWinExt is discoverable
 # ---------------------------------------------------------------------------
 # KeePass silently skips plugin DLLs whose main type can't be resolved. If
 # something about the build produced a DLL without the expected type (wrong
 # namespace, private class, missing base-class reference), we'd never see an
 # error — the plugin just wouldn't appear. Catch that here, before launching
 # KeePass, by reflection-loading the installed DLL and checking for the
-# `PassKee.PassKeeExt` type and its `KeePass.Plugins.Plugin` base.
+# `KeePassKeyWin.KeePassKeyWinExt` type and its `KeePass.Plugins.Plugin` base.
 
 Write-Host ""
 Write-Host "[validator] --- Step 4b: Reflection probe ---"
 
-$installedPluginDll = Join-Path $pluginDir "PassKee.dll"
+$installedPluginDll = Join-Path $pluginDir "KeePassKeyWin.dll"
 
 # The single most important gate: KeePass's PluginManager reads
 # FileVersionInfo.GetVersionInfo(...).ProductName and silently `continue;`s
@@ -723,7 +723,7 @@ $installedPluginDll = Join-Path $pluginDir "PassKee.dll"
 # Runs on any Windows PowerShell version — no System.Reflection.Metadata,
 # no ReflectionOnlyLoadFrom, no runtime-specific surface.
 $vi = (Get-Item $installedPluginDll).VersionInfo
-Write-Host "[validator] PassKee.dll VersionInfo:"
+Write-Host "[validator] KeePassKeyWin.dll VersionInfo:"
 Write-Host "    ProductName : $($vi.ProductName)"
 Write-Host "    FileVersion : $($vi.FileVersion)"
 Write-Host "    CompanyName : $($vi.CompanyName)"
@@ -731,8 +731,8 @@ Write-Host "    CompanyName : $($vi.CompanyName)"
 if ($vi.ProductName -ne "KeePass Plugin") {
     Fail ("Plugin DLL ProductName is '$($vi.ProductName)', expected 'KeePass Plugin'. " +
           "KeePass 2.x's PluginManager.cs does `continue;` on any DLL not matching this " +
-          "exact string and will silently skip PassKee without logging anything. Fix: ensure " +
-          "<Product>KeePass Plugin</Product> is set in PassKee.Plugin.csproj and rebuild.")
+          "exact string and will silently skip KeePassKeyWin without logging anything. Fix: ensure " +
+          "<Product>KeePass Plugin</Product> is set in KeePassKeyWin.Plugin.csproj and rebuild.")
 }
 
 # Secondary: AssemblyName — read the full strong name + version. Works on
@@ -741,7 +741,7 @@ if ($vi.ProductName -ne "KeePass Plugin") {
 # unexpected version would surface here.
 try {
     $asmName = [System.Reflection.AssemblyName]::GetAssemblyName($installedPluginDll)
-    Write-Host "[validator] PassKee.dll identity: $($asmName.FullName)"
+    Write-Host "[validator] KeePassKeyWin.dll identity: $($asmName.FullName)"
 } catch {
     Write-Warning "[validator] Could not read AssemblyName (non-fatal): $($_.Exception.Message)"
 }
@@ -756,7 +756,7 @@ Write-Host ""
 Write-Host "[validator] --- Step 5: Prepare temp vault ---"
 
 $guid    = [System.Guid]::NewGuid().ToString("N")
-$tempDir = Join-Path $env:TEMP "passkee-validate-$guid"
+$tempDir = Join-Path $env:TEMP "keepasskeywin-validate-$guid"
 $Script:tempDir = $tempDir
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
@@ -783,7 +783,7 @@ Write-Host "[validator] --- Step 5b: Force KeePass diagnostic mode ---"
 
 # 5b-i. Clear plugin cache (stale-cache hypothesis).
 # KeePass caches loaded plugin assemblies; a stale cache entry for an old
-# PassKee.dll version can prevent the new one from loading.
+# KeePassKeyWin.dll version can prevent the new one from loading.
 $pluginCacheDir = Join-Path $env:LOCALAPPDATA "KeePass\PluginCache"
 if (Test-Path $pluginCacheDir) {
     Write-Host "[validator] Clearing plugin cache: $pluginCacheDir"
@@ -949,7 +949,7 @@ Write-Host "[validator] KeePass stderr -> $keepassStderr"
 Write-Host ""
 Write-Host "[validator] --- Step 7: Poll for handshake nonce (timeout: ${TimeoutSec}s) ---"
 
-$regPath  = "HKCU:\Software\PassKee"
+$regPath  = "HKCU:\Software\KeePassKeyWin"
 $nonce    = $null
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 
@@ -992,8 +992,8 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if ([string]::IsNullOrEmpty($nonce)) {
-    Fail ("Handshake nonce did not appear in HKCU:\Software\PassKee\HandshakeNonce within ${TimeoutSec}s. " +
-          "Likely cause: plugin did not load (check KeePass Tools > PassKee menu, or KeePass log).")
+    Fail ("Handshake nonce did not appear in HKCU:\Software\KeePassKeyWin\HandshakeNonce within ${TimeoutSec}s. " +
+          "Likely cause: plugin did not load (check KeePass Tools > KeePassKeyWin menu, or KeePass log).")
 }
 
 Write-Host "[validator] Nonce found: $($nonce.Substring(0, [Math]::Min(8, $nonce.Length)))..."
