@@ -56,6 +56,20 @@ pub(crate) mod imp {
     /// `sta_block_on`.
     pub static RT: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
 
+    /// Process-wide authenticator state shared across every `IPluginAuthenticator`
+    /// instance handed out by `cf_create_instance`. The pipe + session_id are
+    /// established once on the first activation; subsequent activations reuse.
+    ///
+    /// Why: webauthn.dll issues `CoCreateInstance` per operation (MakeCredential,
+    /// then GetAssertion) without releasing the prior object promptly. The
+    /// plugin-side `PipeServer` accepts exactly one concurrent client
+    /// (`maxNumberOfServerInstances = 1`, see PassKee.Core/Ipc/PipeServer.cs).
+    /// A per-object pipe meant Object 2 hit `ERROR_PIPE_BUSY` while Object 1
+    /// still held the only slot. Sharing the Arc lets the STA thread serialize
+    /// dispatches through the inner Mutex over the one pipe.
+    static SHARED_STATE: Mutex<Option<Arc<Mutex<PasskeeAuthenticatorState>>>> =
+        Mutex::new(None);
+
     /// Thread ID of the STA running the message pump. Zero until
     /// `run_com_server` captures it.
     pub static STA_THREAD_ID: AtomicU32 = AtomicU32::new(0);
@@ -135,45 +149,76 @@ pub(crate) mod imp {
         let session_id = unsafe { (*this).session_id };
         dbg_step!("cf_create_instance session_id={session_id}");
 
-        // Pull the shared runtime. Panic is intentional — only reachable after
-        // run_com_server has populated RT.
-        let runtime = RT.get().expect("runtime uninitialised").clone();
+        // Reuse the process-wide state if already established (see SHARED_STATE
+        // docs above for the pipe-busy rationale). First activation runs the
+        // pipe connect + passkee.hello handshake; subsequent activations clone
+        // the Arc so every COM object shares the single pipe.
+        let state = {
+            let guard = SHARED_STATE.lock().unwrap();
+            guard.as_ref().map(Arc::clone)
+        };
 
-        // Connect the pipe AND complete the passkee.hello handshake before
-        // handing the authenticator object to the caller. The plugin-side
-        // RpcDispatcher rejects every non-`passkee.hello` method until the
-        // per-connection ConnectionContext has HandshakeComplete=true, so
-        // without this we can't dispatch anything.
-        //
-        // Concurrency note: the HKCU nonce is read by THIS activation, then
-        // consumed + rotated by the plugin on our handshake call. If two
-        // browser registrations activate two sidecars concurrently, both
-        // read the same nonce; the first handshake wins, the second gets
-        // HandshakeInvalid and drops the pipe. Not a v1 concern — browsers
-        // don't register concurrently. Documented in MEMORY.md.
-        let pipe = runtime.block_on(async {
-            let mut p = match crate::ipc::PipeClient::connect(session_id).await {
-                Ok(p)  => { dbg_step!("pipe connect OK"); p }
-                Err(e) => { dbg_step!("pipe connect FAILED: {e}"); return None; }
-            };
-            let nonce = match read_handshake_nonce() {
-                Some(n) => {
-                    let prefix: String = n.chars().take(8).collect();
-                    dbg_step!("read nonce from HKCU: \"{prefix}...\" ({} chars)", n.len());
-                    n
-                }
-                None => {
-                    dbg_step!("read nonce FAILED — HKCU\\Software\\PassKee\\HandshakeNonce missing");
-                    return None;
-                }
-            };
-            match p.handshake(PASSKEE_PKG_FAMILY, &nonce).await {
-                Ok(())  => { dbg_step!("handshake OK"); Some(p) }
-                Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
+        let state = match state {
+            Some(s) => {
+                dbg_step!("reusing process-shared pipe state");
+                s
             }
-        });
+            None => {
+                // Pull the shared runtime. Panic is intentional — only reachable
+                // after run_com_server has populated RT.
+                let runtime = RT.get().expect("runtime uninitialised").clone();
 
-        let state = Arc::new(Mutex::new(PasskeeAuthenticatorState { session_id, pipe }));
+                // Connect the pipe AND complete the passkee.hello handshake
+                // before handing the authenticator object to the caller. The
+                // plugin-side RpcDispatcher rejects every non-`passkee.hello`
+                // method until the per-connection ConnectionContext has
+                // HandshakeComplete=true, so without this we can't dispatch
+                // anything.
+                //
+                // Concurrency note: the HKCU nonce is read by THIS activation,
+                // then consumed + rotated by the plugin on our handshake call.
+                // If two browser registrations activate two sidecars
+                // concurrently, both read the same nonce; the first handshake
+                // wins, the second gets HandshakeInvalid and drops the pipe.
+                // Not a v1 concern — browsers don't register concurrently.
+                // Documented in MEMORY.md.
+                let pipe = runtime.block_on(async {
+                    let mut p = match crate::ipc::PipeClient::connect(session_id).await {
+                        Ok(p)  => { dbg_step!("pipe connect OK"); p }
+                        Err(e) => { dbg_step!("pipe connect FAILED: {e}"); return None; }
+                    };
+                    let nonce = match read_handshake_nonce() {
+                        Some(n) => {
+                            let prefix: String = n.chars().take(8).collect();
+                            dbg_step!("read nonce from HKCU: \"{prefix}...\" ({} chars)", n.len());
+                            n
+                        }
+                        None => {
+                            dbg_step!("read nonce FAILED — HKCU\\Software\\PassKee\\HandshakeNonce missing");
+                            return None;
+                        }
+                    };
+                    match p.handshake(PASSKEE_PKG_FAMILY, &nonce).await {
+                        Ok(())  => { dbg_step!("handshake OK"); Some(p) }
+                        Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
+                    }
+                });
+
+                // Only cache in SHARED_STATE when the handshake actually
+                // succeeded. A cached None would pin the process into a
+                // permanent failure state if the first activation raced
+                // against a not-yet-ready KeePass plugin.
+                let fresh = Arc::new(Mutex::new(PasskeeAuthenticatorState {
+                    session_id,
+                    pipe,
+                }));
+                if fresh.lock().unwrap().pipe.is_some() {
+                    *SHARED_STATE.lock().unwrap() = Some(fresh.clone());
+                }
+                fresh
+            }
+        };
+
         let obj = IPluginAuthenticatorImpl::new(state);
         let raw = Box::into_raw(obj);
 
