@@ -265,6 +265,36 @@ pub(crate) mod imp {
             req.transaction_id.data4[6], req.transaction_id.data4[7],
         );
 
+        // ── Sig-verify gate: verify pbRequestSignature before touching pipe ──
+        {
+            let sig_bytes = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
+                unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
+            } else {
+                &[]
+            };
+            // The signed payload for a cancel request is the GUID bytes of
+            // the transaction_id (16 bytes). Windows signs the transactionId
+            // as a raw GUID, not CBOR. Use the raw bytes of the Guid struct.
+            //
+            // Actually: per the locked design, the signed payload is
+            // pbEncodedRequest for op-requests. For cancel, there is no
+            // pbEncodedRequest — the request struct only has the transactionId
+            // and the signature. Microsoft's PasskeyManager sample signs the
+            // transactionId bytes for cancel. We use the raw GUID bytes.
+            let txn_id_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    &req.transaction_id as *const _ as *const u8,
+                    std::mem::size_of::<crate::com::types::Guid>(),
+                )
+            };
+            let sig_hr = crate::com::request_sig::verify_request_signature(sig_bytes, txn_id_bytes);
+            if sig_hr.is_err() {
+                tracing::warn!("[sig-verify] REJECT cancel_operation hr=0x{:08x}", sig_hr.0 as u32);
+                return HRESULT(sig_hr.0);
+            }
+            tracing::debug!("[sig-verify] cancel_operation signature OK");
+        }
+
         // Take pipe out of state, release lock before STA-pumping wait.
         let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
         let mut pipe = match pipe_opt {
@@ -347,6 +377,24 @@ pub(crate) mod imp {
         // ── Step 1: extract UV prompt hint from CBOR ──────────────────────────
         let username_hint = extract_prompt_hint(cbor_bytes, method);
         dbg_step!("extract_prompt_hint -> \"{username_hint}\"");
+
+        // ── Sig-verify gate (between CBOR extraction and UV) ──────────────────
+        // Verify pbRequestSignature before popping the Windows Hello UV prompt.
+        // This ensures a forged/unauthenticated request cannot cause a UV
+        // dialog to appear or reach the KeePass vault over IPC.
+        {
+            let sig_bytes = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
+                unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
+            } else {
+                &[]
+            };
+            let sig_hr = crate::com::request_sig::verify_request_signature(sig_bytes, cbor_bytes);
+            if sig_hr.is_err() {
+                tracing::warn!("[sig-verify] REJECT {method} hr=0x{:08x}", sig_hr.0 as u32);
+                return HRESULT(sig_hr.0);
+            }
+            dbg_step!("sig-verify OK");
+        }
 
         // UTF-16 owned buffers — kept alive across the UV call.
         let username_w: Vec<u16> = username_hint.encode_utf16().chain(std::iter::once(0)).collect();

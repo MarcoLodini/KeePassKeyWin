@@ -30,6 +30,12 @@ pub mod com {
     // post-MakeCredential hook to publish credentials into Windows' autofill DB.
     #[cfg(windows)]
     pub mod webauthnplugin_ext;
+    // Request-signature verification: fetches the op-signing public key from
+    // webauthn.dll (once per process) and verifies pbRequestSignature on every
+    // MakeCredential, GetAssertion, and CancelOperation call.
+    // The module itself is cross-platform (tests run on Linux); Windows-only
+    // code is gated internally with #[cfg(windows)].
+    pub mod request_sig;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;
