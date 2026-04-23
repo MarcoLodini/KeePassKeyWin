@@ -98,10 +98,11 @@ pub(crate) mod imp {
     use windows::Win32::System::Com::{CoReleaseServerProcess, CoTaskMemAlloc};
 
     use crate::com::exe_server::sta_block_on;
+    use sha2::Digest as _;
+
     use crate::com::types::{
         PluginLockStatus, WebauthNPluginCancelOperationRequest,
         WebauthNPluginOperationRequest, WebauthNPluginOperationResponse,
-        WebauthnPluginUserVerificationRequest,
     };
     use crate::com::webauthn_ext;
     use crate::ipc::{ClientError, PipeClient};
@@ -386,28 +387,45 @@ pub(crate) mod imp {
         let username_w: Vec<u16> = username_hint.encode_utf16().chain(std::iter::once(0)).collect();
         let display_hint_w: Vec<u16> = "KeePassKeyWin\0".encode_utf16().collect();
 
-        // ── Step 2: call PerformUserVerification (inline on STA thread) ───────
-        let uv_request = WebauthnPluginUserVerificationRequest {
-            hwnd:              req.hwnd,
-            p_transaction_id:  &req.transaction_id as *const _,
-            pwsz_username:     username_w.as_ptr(),
-            pwsz_display_hint: display_hint_w.as_ptr(),
-        };
+        // ── Step 2: call PerformUserVerification(2) (inline on STA thread) ────
+        //
+        // 5.UV.3: compute SHA-256(pbEncodedRequest) once and pass it to the v2
+        // entrypoint as `buffer_to_sign`. The Windows runtime signs this digest
+        // and returns the opaque UV signature so the plugin can verify it
+        // independently (Phase 5.UV.4). The digest is bound to a named variable
+        // so it stays live through the FFI call — do NOT inline into the args.
+        // Reuses the `sha2` crate already present in Cargo.toml (via request_sig).
+        let buffer_to_sign = sha2::Sha256::digest(cbor_bytes);
 
         let mut cb_uv_response: u32 = 0;
         let mut pb_uv_response: *mut u8 = std::ptr::null_mut();
 
         dbg_step!("UV call ...");
-        let uv_hr = match webauthn_ext::perform_user_verification(
-            &uv_request, &mut cb_uv_response, &mut pb_uv_response,
+        let (uv_hr, uv_tier) = match webauthn_ext::perform_user_verification_2(
+            req.hwnd,
+            &req.transaction_id as *const _,
+            username_w.as_ptr(),
+            display_hint_w.as_ptr(),
+            buffer_to_sign.as_slice(),
+            &mut cb_uv_response,
+            &mut pb_uv_response,
         ) {
-            Ok(hr) => hr,
+            Ok(pair) => pair,
             Err(e) => {
                 dbg_step!("UV bindings FAILED: {e}");
                 return HRESULT(E_FAIL as i32);
             }
         };
-        dbg_step!("UV returned hr=0x{:08x} cb_response={cb_uv_response}", uv_hr.0 as u32);
+        dbg_step!("UV returned hr=0x{:08x} cb_response={cb_uv_response} tier={}",
+                  uv_hr.0 as u32, uv_tier.ipc_str());
+
+        // Capture the opaque UV signature bytes before freeing the buffer.
+        // Empty vec when cb_uv_response == 0 (matches pbRequestSignatureB64 precedent).
+        let uv_sig_bytes: Vec<u8> = if !pb_uv_response.is_null() && cb_uv_response > 0 {
+            unsafe { std::slice::from_raw_parts(pb_uv_response, cb_uv_response as usize) }.to_vec()
+        } else {
+            Vec::new()
+        };
 
         // Free the UV response on EVERY exit path from here on.
         webauthn_ext::free_user_verification_response(pb_uv_response);
@@ -431,14 +449,17 @@ pub(crate) mod imp {
             }
         };
 
-        // 5.UV.2: pbRequestSignatureB64 lets the plugin re-verify independently
-        // of the sidecar. Empty string when the request had no signature (the
-        // sidecar gate above would have already rejected such a request, so the
-        // plugin should never see this case in practice — sent for completeness).
+        // 5.UV.2: pbRequestSignatureB64 lets the plugin re-verify the request
+        // signature independently of the sidecar gate.
+        // 5.UV.3: uvSignatureB64 carries the opaque PerformUserVerification(2)
+        // response; uvBindingTier records which Windows entrypoint resolved.
+        // The plugin logs both in 5.UV.3 and verifies uvSignatureB64 in 5.UV.4.
         let params = serde_json::json!({
             "cbor": cbor_b64,
             "uv": true,
             "pbRequestSignatureB64": sig_b64,
+            "uvSignatureB64": base64::engine::general_purpose::STANDARD.encode(&uv_sig_bytes),
+            "uvBindingTier": uv_tier.ipc_str(),
         });
         let method_owned = method.to_string();
         dbg_step!("RPC call {method} (cbor {}B) ...", cbor_bytes.len());

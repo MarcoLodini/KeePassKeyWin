@@ -154,6 +154,22 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             };
 
         /// <summary>
+        /// Builds a handler with one credential pre-seeded, ready for a
+        /// <c>getAssertionRaw</c> dispatch. Returns the handler and a valid
+        /// params JObject (signed with the test op-sign key). Exposed as
+        /// <c>internal</c> for use by <see cref="VaultHandlerUv3Tests"/>.
+        /// </summary>
+        internal static (VaultHandler handler, JObject assertParams) BuildHandlerWithCredential(
+            string rpId = "example.com")
+        {
+            OpSignTestKeys.EnsureCachePopulated();
+            var store = new InMemoryPasskeyStore();
+            var (rawCredId, _) = SeedCredential(store, rpId);
+            var cborBytes = BuildGetAssertionCbor(rpId, allowListCredIds: new[] { rawCredId });
+            return (new VaultHandler(store), BuildGetAssertionRawParams(cborBytes, uv: true));
+        }
+
+        /// <summary>
         /// Populates the store with a fresh P-256 credential and returns the raw
         /// credentialId bytes plus the record (including PKCS#8 private key).
         /// </summary>

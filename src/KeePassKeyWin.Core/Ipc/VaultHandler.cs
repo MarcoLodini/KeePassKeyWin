@@ -121,6 +121,13 @@ namespace KeePassKeyWin.Core.Ipc
             // base64), so callers reuse the returned bytes.
             byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.makeCredentialRaw");
 
+            // 5.UV.3: sidecar now forwards the UV signature bytes + which fallback tier
+            // resolved. Plugin logs these in 5.UV.3 and verifies them in 5.UV.4; absent
+            // fields are tolerated (pre-5.UV.3 sidecar).
+            var uvSigB64 = obj["uvSignatureB64"]?.Value<string>();
+            var uvTier = obj["uvBindingTier"]?.Value<string>();
+            Debug.WriteLine($"[uv-ingest] method=keepasskeywin.makeCredentialRaw tier={uvTier ?? "absent"} sig_len={uvSigB64?.Length ?? 0}");
+
             // Parse the CTAP2 authenticatorMakeCredential input map.
             MakeCredentialRequest req;
             try
@@ -226,6 +233,13 @@ namespace KeePassKeyWin.Core.Ipc
             // CTAP work. Helper decodes the cbor (also throws on malformed
             // base64), so callers reuse the returned bytes.
             byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.getAssertionRaw");
+
+            // 5.UV.3: sidecar now forwards the UV signature bytes + which fallback tier
+            // resolved. Plugin logs these in 5.UV.3 and verifies them in 5.UV.4; absent
+            // fields are tolerated (pre-5.UV.3 sidecar).
+            var uvSigB64 = obj["uvSignatureB64"]?.Value<string>();
+            var uvTier = obj["uvBindingTier"]?.Value<string>();
+            Debug.WriteLine($"[uv-ingest] method=keepasskeywin.getAssertionRaw tier={uvTier ?? "absent"} sig_len={uvSigB64?.Length ?? 0}");
 
             GetAssertionRequest req;
             try

@@ -72,7 +72,13 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         /// Builds a minimal but structurally valid CTAP2 authenticatorMakeCredential input map.
         /// Only ES256 (-7) in pubKeyCredParams, empty excludeList.
         /// </summary>
-        private static byte[] BuildMinimalMakeCredentialCbor(
+        /// <summary>
+        /// Builds a minimal CTAP2 authenticatorMakeCredential input map.
+        /// Exposed as <c>internal</c> so sibling test classes (e.g.
+        /// <see cref="VaultHandlerUv3Tests"/>) can reuse the canonical CBOR shape
+        /// without duplicating the builder.
+        /// </summary>
+        internal static byte[] MinimalMakeCredentialCbor(
             string rpId = "example.com",
             byte[]? userId = null,
             string userName = "user@example.com",
@@ -157,7 +163,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_ReturnsBase64StdCborResult()
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor());
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor());
 
             var cborB64 = result["cbor"]?.Value<string>();
             Assert.NotNull(cborB64);
@@ -172,7 +178,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_PwEntryAddedToStore()
         {
             var handler = MakeHandler(out var store);
-            CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor(rpId: "test.example"));
+            CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor(rpId: "test.example"));
 
             var all = store.GetAll();
             Assert.Single(all);
@@ -185,7 +191,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_ResponseDecodesAsAttestationObject()
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor());
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor());
 
             var decoded = Convert.FromBase64String(result["cbor"]!.Value<string>()!);
             var reader = new CborReader(decoded);
@@ -230,7 +236,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_UV_False_AuthDataFlagsNoUvBit()
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor(), uv: false);
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor(), uv: false);
 
             var authData = ExtractAuthDataFromResponse(result);
             byte flags = authData[32];
@@ -248,7 +254,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_UV_True_AuthDataFlagsHasUvBit()
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor(), uv: true);
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor(), uv: true);
 
             var authData = ExtractAuthDataFromResponse(result);
             byte flags = authData[32];
@@ -265,7 +271,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void HappyPath_AuthDataStartsWithRpIdHash()
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor(rpId: "example.com"), uv: false);
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor(rpId: "example.com"), uv: false);
 
             var authData = ExtractAuthDataFromResponse(result);
             var expectedHash = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes("example.com"));
@@ -278,7 +284,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             // Call without the 'uv' key in params (still signs the cbor so the
             // 5.UV.2 gate accepts; tests the uv-absent branch only).
             var handler = MakeHandler(out _);
-            var cborBytes = BuildMinimalMakeCredentialCbor();
+            var cborBytes = MinimalMakeCredentialCbor();
             var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
             {
                 ["cbor"] = Convert.ToBase64String(cborBytes),
@@ -450,7 +456,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             });
 
             // Build a request that excludes this credential.
-            var cbor = BuildMinimalMakeCredentialCbor(
+            var cbor = MinimalMakeCredentialCbor(
                 rpId: "example.com",
                 excludeList: new[] { rawCredId });
 
@@ -479,7 +485,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             var unrelatedId = new byte[32];
             unrelatedId[0] = 0xFF;
 
-            var cbor = BuildMinimalMakeCredentialCbor(
+            var cbor = MinimalMakeCredentialCbor(
                 rpId: "example.com",
                 excludeList: new[] { unrelatedId });
 
@@ -591,7 +597,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void UvFlag_ProducesCorrectFlags(bool uv, byte expectedFlags)
         {
             var handler = MakeHandler(out _);
-            var result = CallMakeCredentialRaw(handler, BuildMinimalMakeCredentialCbor(), uv: uv);
+            var result = CallMakeCredentialRaw(handler, MinimalMakeCredentialCbor(), uv: uv);
 
             var authData = ExtractAuthDataFromResponse(result);
             Assert.Equal(expectedFlags, authData[32]);
