@@ -121,7 +121,7 @@ Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via
 - [x] RS256 (COSE `-257`) algorithm support — ES256 preferred via tiebreaker; RS256 selectable when RP excludes ES256; both advertised in `authenticatorGetInfo`
 - [ ] Plugin UI: list / delete passkeys from inside KeePass
 - [ ] Sidecar confirmation UI when KeePass is minimized
-- [ ] `credProps` extension
+- [x] `credProps` extension — zero-code: `webauthn.dll` populates `credProps.rk=true` from our `options.rk=true` advertisement. Empirically confirmed at webauthn.io 2026-04-23 — `credential.getClientExtensionResults()` returned `{credProps: {rk: true}}` on the ES256 tiebreaker path.
 - [x] **⚠ Important — deferred from Phase 2.2**: plugin-side verification of `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature` against the op-signing public key. Landed in `67a38ae` (enforcement) + `9d96aef` (cancel-op fix); live-validated at webauthn.io on 2026-04-23 with bypass env var unset at Process/User/Machine scope. Implementation deviates from the original brief: key is runtime-fetched via `WebAuthNPluginGetOperationSigningPublicKey(REFCLSID)` and cached per-process (fail-closed `OnceLock`) rather than persisted in HKCU/LocalState — rationale in `src/KeePassKeyWin.Provider/src/com/request_sig.rs` module docs. Emergency bypass: `KEEPASSKEYWIN_SKIP_REQUEST_SIG_VERIFY=1`. `cancel_operation` intentionally skips the gate, matching Microsoft's PasskeyManager sample.
 
 ## Phase 6 — Distribution
