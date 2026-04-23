@@ -7,13 +7,18 @@ using Newtonsoft.Json.Linq;
 using KeePassKeyWin.Core.Cbor;
 using KeePassKeyWin.Core.Ipc;
 using KeePassKeyWin.Core.Storage;
+using KeePassKeyWin.Core.Tests.Crypto;
 using Xunit;
 
 namespace KeePassKeyWin.Core.Tests.Ipc
 {
     /// <summary>
     /// Tests for the keepasskeywin.makeCredentialRaw JSON-RPC method (Phase 3 Track 2).
+    /// 5.UV.2 onward: every dispatch goes through the plugin-side signature
+    /// gate, so the test harness installs a deterministic op-sign keypair via
+    /// <see cref="OpSignTestKeys"/> and signs every cbor payload with it.
     /// </summary>
+    [Collection("OpSignPubKeyCache")]
     public class MakeCredentialRawTests
     {
         // ── CTAP2 CBOR builders ──────────────────────────────────────────────
@@ -120,17 +125,29 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
         private static VaultHandler MakeHandler(out InMemoryPasskeyStore store)
         {
+            // Install the test op-signing pubkey before constructing the handler;
+            // the 5.UV.2 gate rejects requests when the cache is empty.
+            OpSignTestKeys.EnsureCachePopulated();
             store = new InMemoryPasskeyStore();
             return new VaultHandler(store);
         }
 
-        private static JObject CallMakeCredentialRaw(VaultHandler handler, byte[] cborBytes, bool uv = false)
-        {
-            var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
+        // Builds the JSON-RPC params object for a raw makeCredential call,
+        // including the pbRequestSignatureB64 field signed with the shared test
+        // op-sign key. Inline tests that bypass CallMakeCredentialRaw must use
+        // this helper too — never construct the params with bare cbor.
+        internal static JObject BuildMakeCredentialRawParams(byte[] cborBytes, bool uv = false)
+            => new JObject
             {
                 ["cbor"] = Convert.ToBase64String(cborBytes),
                 ["uv"]   = uv,
-            });
+                ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+            };
+
+        private static JObject CallMakeCredentialRaw(VaultHandler handler, byte[] cborBytes, bool uv = false)
+        {
+            var result = handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(cborBytes, uv));
             return (JObject)result!;
         }
 
@@ -258,11 +275,14 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         [Fact]
         public void HappyPath_UvDefault_FalseWhenParamAbsent()
         {
-            // Call without the 'uv' key in params.
+            // Call without the 'uv' key in params (still signs the cbor so the
+            // 5.UV.2 gate accepts; tests the uv-absent branch only).
             var handler = MakeHandler(out _);
+            var cborBytes = BuildMinimalMakeCredentialCbor();
             var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
             {
-                ["cbor"] = Convert.ToBase64String(BuildMinimalMakeCredentialCbor()),
+                ["cbor"] = Convert.ToBase64String(cborBytes),
+                ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
             });
 
             var authData = ExtractAuthDataFromResponse((JObject)result!);
@@ -302,11 +322,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             var cborBytes = w.Encode();
 
             var handler = MakeHandler(out var store);
-            var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(cborBytes),
-                ["uv"]   = false,
-            });
+            var result = handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(cborBytes, uv: false));
 
             Assert.NotNull(result);
             var all = store.GetAll();
@@ -342,11 +359,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             });
 
             var handler = MakeHandler(out var store);
-            handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(w.Encode()),
-                ["uv"]   = false,
-            });
+            handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(w.Encode(), uv: false));
 
             var all = store.GetAll();
             Assert.Single(all);
@@ -383,11 +397,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(cborBytes),
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(cborBytes, uv: false)));
 
             Assert.Equal(RpcErrorCode.UnsupportedAlgorithm, ex.Code);
         }
@@ -413,11 +424,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(w.Encode()),
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(w.Encode(), uv: false)));
 
             Assert.Equal(RpcErrorCode.UnsupportedAlgorithm, ex.Code);
         }
@@ -447,11 +455,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
                 excludeList: new[] { rawCredId });
 
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(cbor),
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(cbor, uv: false)));
 
             Assert.Equal(RpcErrorCode.CredentialExcluded, ex.Code);
         }
@@ -479,11 +484,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
                 excludeList: new[] { unrelatedId });
 
             // Should succeed — no credential with this ID in store.
-            var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(cbor),
-                ["uv"]   = false,
-            });
+            var result = handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(cbor, uv: false));
             Assert.NotNull(result);
         }
 
@@ -492,13 +494,12 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         [Fact]
         public void MalformedCbor_Truncated_ThrowsInvalidParams()
         {
+            // Sign the truncated bytes so the 5.UV.2 gate accepts and the
+            // malformed-CBOR error fires from the parser, not from the gate.
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(new byte[] { 0xA5 }), // map says 5 items, none follow
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(new byte[] { 0xA5 }, uv: false)));
 
             Assert.Equal(RpcErrorCode.InvalidParams, ex.Code);
         }
@@ -521,13 +522,11 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         public void MalformedCbor_IndefiniteLengthMap_ThrowsInvalidParams()
         {
             // 0xBF = indefinite-length map start — CTAP2 forbids this.
+            // Sign the bytes so the 5.UV.2 gate accepts and the parser fires.
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(new byte[] { 0xBF }),
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(new byte[] { 0xBF }, uv: false)));
 
             Assert.Equal(RpcErrorCode.InvalidParams, ex.Code);
         }
@@ -554,11 +553,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(w.Encode()),
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(w.Encode(), uv: false)));
 
             Assert.Equal(RpcErrorCode.InvalidParams, ex.Code);
         }
@@ -610,11 +606,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             var handler = MakeHandler(out _);
             // Using an invalid-but-recognisable cbor to confirm routing, not CBOR parsing.
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(new byte[] { 0x00 }), // uint 0, not a map
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.makeCredentialRaw",
+                    BuildMakeCredentialRawParams(new byte[] { 0x00 }, uv: false)));
             // Should get InvalidParams (from malformed CBOR), NOT MethodNotFound.
             Assert.NotEqual(RpcErrorCode.MethodNotFound, ex.Code);
         }

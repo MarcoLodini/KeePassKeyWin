@@ -4,6 +4,7 @@ using System.Diagnostics;
 using Newtonsoft.Json.Linq;
 using KeePassKeyWin.Core.Cbor;
 using KeePassKeyWin.Core.Crypto;
+using KeePassKeyWin.Core.Security;
 using KeePassKeyWin.Core.Storage;
 using KeePassKeyWin.Core.WebAuthn;
 
@@ -112,22 +113,13 @@ namespace KeePassKeyWin.Core.Ipc
         {
             var obj = RequireObject(@params, "keepasskeywin.makeCredentialRaw");
 
-            // Extract 'cbor' (base64-std) and 'uv' (bool) from params.
-            var cborB64 = RequireString(obj, "cbor");
             var uvToken = obj["uv"];
             bool uv = uvToken?.Value<bool>() ?? false;
 
-            // Decode the outer CBOR bytes (base64-std, not base64url).
-            byte[] cborBytes;
-            try
-            {
-                cborBytes = Convert.FromBase64String(cborB64);
-            }
-            catch (FormatException ex)
-            {
-                throw new RpcException(RpcErrorCode.InvalidParams,
-                    "keepasskeywin.makeCredentialRaw: 'cbor' is not valid base64: " + ex.Message);
-            }
+            // 5.UV.2: verify pbRequestSignature plugin-side before doing any
+            // CTAP work. Helper decodes the cbor (also throws on malformed
+            // base64), so callers reuse the returned bytes.
+            byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.makeCredentialRaw");
 
             // Parse the CTAP2 authenticatorMakeCredential input map.
             MakeCredentialRequest req;
@@ -227,20 +219,13 @@ namespace KeePassKeyWin.Core.Ipc
         {
             var obj = RequireObject(@params, "keepasskeywin.getAssertionRaw");
 
-            var cborB64 = RequireString(obj, "cbor");
             var uvToken = obj["uv"];
             bool uv = uvToken?.Value<bool>() ?? false;
 
-            byte[] cborBytes;
-            try
-            {
-                cborBytes = Convert.FromBase64String(cborB64);
-            }
-            catch (FormatException ex)
-            {
-                throw new RpcException(RpcErrorCode.InvalidParams,
-                    "keepasskeywin.getAssertionRaw: 'cbor' is not valid base64: " + ex.Message);
-            }
+            // 5.UV.2: verify pbRequestSignature plugin-side before doing any
+            // CTAP work. Helper decodes the cbor (also throws on malformed
+            // base64), so callers reuse the returned bytes.
+            byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.getAssertionRaw");
 
             GetAssertionRequest req;
             try
@@ -872,6 +857,92 @@ namespace KeePassKeyWin.Core.Ipc
                 });
             }
             return arr;
+        }
+
+        // 5.UV.2: verify pbRequestSignature plugin-side, then return the
+        // decoded cbor bytes for the caller to reuse. Order of checks:
+        //   1. Bypass env var → short-circuit accept (loud log).
+        //   2. OpSignPubKeyCache.Current null → reject (fail-closed). The
+        //      RpcDispatcher rejects un-greeted requests upstream, so by the
+        //      time this runs, the handshake completed; null cache means the
+        //      sidecar omitted opSignPublicKeyB64 or sent malformed bytes.
+        //   3. pbRequestSignatureB64 missing or malformed → reject.
+        //   4. EcdsaVerifier.Verify(pubkey, cborBytes, sigBytes) false → reject.
+        //
+        // All rejections throw RpcException(InvalidParams, ...) with a
+        // discriminating message. Sidecar still verifies for belt-and-braces
+        // through 5.UV.2; its gate is removed in 5.UV.5.
+        internal static byte[] VerifyAndDecodeCbor(JObject obj, string method)
+        {
+            var cborB64 = RequireString(obj, "cbor");
+
+            byte[] cborBytes;
+            try
+            {
+                cborBytes = Convert.FromBase64String(cborB64);
+            }
+            catch (FormatException ex)
+            {
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"{method}: 'cbor' is not valid base64: {ex.Message}");
+            }
+
+            // Step 1: bypass takes precedence over everything else so the
+            // emergency escape hatch works even when the cache is empty.
+            if (IsBypassEnabled())
+            {
+                Debug.WriteLine($"[sig-verify] BYPASS via {BypassEnvVars.SkipPluginSigVerify} for {method} — DO NOT USE IN PRODUCTION");
+                return cborBytes;
+            }
+
+            // Step 2: cache must be populated by the handshake.
+            var pubKey = OpSignPubKeyCache.Current;
+            if (pubKey == null)
+            {
+                Debug.WriteLine($"[sig-verify] REJECT {method}: op-sign pubkey cache is empty");
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"{method}: op-sign pubkey not cached (handshake did not deliver opSignPublicKeyB64). " +
+                    $"Set {BypassEnvVars.SkipPluginSigVerify}=1 to bypass for emergency.");
+            }
+
+            // Step 3: signature must be present and well-formed base64.
+            var sigB64 = obj["pbRequestSignatureB64"]?.Value<string>();
+            if (string.IsNullOrEmpty(sigB64))
+            {
+                Debug.WriteLine($"[sig-verify] REJECT {method}: pbRequestSignatureB64 missing");
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"{method}: pbRequestSignatureB64 param is required.");
+            }
+            byte[] sigBytes;
+            try
+            {
+                sigBytes = Convert.FromBase64String(sigB64!);
+            }
+            catch (FormatException ex)
+            {
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"{method}: pbRequestSignatureB64 is not valid base64: {ex.Message}");
+            }
+
+            // Step 4: cryptographic verification.
+            if (!EcdsaVerifier.Verify(pubKey.Value.Span, cborBytes, sigBytes))
+            {
+                Debug.WriteLine($"[sig-verify] REJECT {method}: signature verification failed (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"{method}: pbRequestSignature verification failed.");
+            }
+
+            Debug.WriteLine($"[sig-verify] OK {method} (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
+            return cborBytes;
+        }
+
+        private static bool IsBypassEnabled()
+        {
+            var v = Environment.GetEnvironmentVariable(BypassEnvVars.SkipPluginSigVerify);
+            if (string.IsNullOrEmpty(v)) return false;
+            return v!.Equals("1", StringComparison.Ordinal)
+                || v.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || v.Equals("yes", StringComparison.OrdinalIgnoreCase);
         }
 
         private void RequireVaultOpen()

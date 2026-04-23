@@ -8,13 +8,18 @@ using Newtonsoft.Json.Linq;
 using KeePassKeyWin.Core.Cbor;
 using KeePassKeyWin.Core.Ipc;
 using KeePassKeyWin.Core.Storage;
+using KeePassKeyWin.Core.Tests.Crypto;
 using Xunit;
 
 namespace KeePassKeyWin.Core.Tests.Ipc
 {
     /// <summary>
     /// Tests for the keepasskeywin.getAssertionRaw JSON-RPC method (Phase 4, CTAP 2.1 §6.2).
+    /// 5.UV.2 onward: every dispatch goes through the plugin-side signature
+    /// gate, so the test harness installs a deterministic op-sign keypair via
+    /// <see cref="OpSignTestKeys"/> and signs every cbor payload with it.
     /// </summary>
+    [Collection("OpSignPubKeyCache")]
     public class GetAssertionRawTests
     {
         // ── CTAP2 CBOR builders ──────────────────────────────────────────────
@@ -119,9 +124,34 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
         private static VaultHandler MakeHandler(out InMemoryPasskeyStore store)
         {
+            // Install the test op-signing pubkey before constructing the handler;
+            // the 5.UV.2 gate rejects requests when the cache is empty.
+            OpSignTestKeys.EnsureCachePopulated();
             store = new InMemoryPasskeyStore();
             return new VaultHandler(store);
         }
+
+        // Builds the JSON-RPC params object for a raw getAssertion call,
+        // including the pbRequestSignatureB64 field signed with the shared test
+        // op-sign key. Inline tests that bypass CallGetAssertionRaw must use
+        // this helper too — never construct the params with bare cbor.
+        internal static JObject BuildGetAssertionRawParams(byte[] cborBytes, bool uv = false)
+            => new JObject
+            {
+                ["cbor"] = Convert.ToBase64String(cborBytes),
+                ["uv"]   = uv,
+                ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+            };
+
+        // Same shape as BuildGetAssertionRawParams but for the makeCredential
+        // method — used by the few cross-method round-trip tests in this file.
+        internal static JObject BuildMakeCredentialRawParams(byte[] cborBytes, bool uv = false)
+            => new JObject
+            {
+                ["cbor"] = Convert.ToBase64String(cborBytes),
+                ["uv"]   = uv,
+                ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+            };
 
         /// <summary>
         /// Populates the store with a fresh P-256 credential and returns the raw
@@ -153,11 +183,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
         private static JObject CallGetAssertionRaw(VaultHandler handler, byte[] cborBytes, bool uv = false)
         {
-            var result = handler.Handle("keepasskeywin.getAssertionRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(cborBytes),
-                ["uv"]   = uv,
-            });
+            var result = handler.Handle("keepasskeywin.getAssertionRaw",
+                BuildGetAssertionRawParams(cborBytes, uv));
             return (JObject)result!;
         }
 
@@ -309,11 +336,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         {
             var handler = MakeHandler(out _);
             var ex = Assert.Throws<RpcException>(() =>
-                handler.Handle("keepasskeywin.getAssertionRaw", new JObject
-                {
-                    ["cbor"] = Convert.ToBase64String(new byte[] { 0x00 }), // uint 0, not a map
-                    ["uv"]   = false,
-                }));
+                handler.Handle("keepasskeywin.getAssertionRaw",
+                    BuildGetAssertionRawParams(new byte[] { 0x00 }, uv: false)));
             Assert.NotEqual(RpcErrorCode.MethodNotFound, ex.Code);
         }
 
@@ -587,11 +611,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
 
             // 1. MakeCredential
             var mcReq = BuildMinimalMakeCredentialCborForRound(rpId, userId: new byte[] { 0xAA });
-            var mcResult = (JObject)handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(mcReq),
-                ["uv"]   = true,
-            })!;
+            var mcResult = (JObject)handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(mcReq, uv: true))!;
             var credIdB64Url = mcResult["credentialIdB64Url"]!.Value<string>()!;
             Assert.False(string.IsNullOrEmpty(credIdB64Url));
 
@@ -785,11 +806,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
                 userDisplayName: "Bob Smith",
                 rpName: "Relying Party");
 
-            var result = (JObject)handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
-            {
-                ["cbor"] = Convert.ToBase64String(cbor),
-                ["uv"]   = false,
-            })!;
+            var result = (JObject)handler.Handle("keepasskeywin.makeCredentialRaw",
+                BuildMakeCredentialRawParams(cbor, uv: false))!;
 
             Assert.NotNull(result["credentialIdB64Url"]?.Value<string>());
             Assert.Equal("relying-party.example", result["rpId"]?.Value<string>());

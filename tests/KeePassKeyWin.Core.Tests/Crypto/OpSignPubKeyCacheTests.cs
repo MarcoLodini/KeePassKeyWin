@@ -13,7 +13,12 @@ namespace KeePassKeyWin.Core.Tests.Crypto
     /// Each test resets the static cache via <see cref="OpSignPubKeyCache.ResetForTesting"/>
     /// so tests do not bleed state into each other. xUnit does not guarantee test ordering
     /// so every test that requires a clean initial state must reset first.
+    ///
+    /// Joined to the OpSignPubKeyCache collection so resets here cannot race
+    /// with raw-handler tests in <c>Ipc/</c> that depend on the cache being
+    /// populated by <see cref="OpSignTestKeys.EnsureCachePopulated"/>.
     /// </summary>
+    [Collection("OpSignPubKeyCache")]
     public class OpSignPubKeyCacheTests
     {
         // ── Null before first set ─────────────────────────────────────────────────
