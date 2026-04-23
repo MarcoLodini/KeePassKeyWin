@@ -38,7 +38,10 @@ pub const KEEPASSKEYWIN_AAGUID: [u8; 16] = [
 ///   3 (aaguid):      KEEPASSKEYWIN_AAGUID (non-zero, v4 UUID bytes)
 ///   4 (options):     {"rk": true, "up": true, "uv": true}
 ///   9 (transports):  ["internal"]
-///   10 (algorithms): [{"alg": -7, "type": "public-key"}]   — ES256 / COSE P-256
+///   10 (algorithms): [
+///                      {"alg":   -7, "type": "public-key"},  — ES256 / ECDSA P-256
+///                      {"alg": -257, "type": "public-key"},  — RS256 / RSASSA-PKCS1-v1_5
+///                    ]
 ///
 /// Matches Microsoft's PasskeyManager reference sample minus key 2
 /// (extensions) — `prf` and `hmac-secret` are v1 non-goals per PLAN.md,
