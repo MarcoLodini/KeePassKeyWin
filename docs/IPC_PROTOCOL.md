@@ -60,15 +60,26 @@ The **first** request on every connection must be `keepasskeywin.hello`. All oth
   "method": "keepasskeywin.hello",
   "params": {
     "clientPkgFamilyName": "KeePassKeyWin.Provider_4fv17arhjxxvg",
-    "handshakeNonce": "<64-char hex nonce>"
+    "handshakeNonce": "<64-char hex nonce>",
+    "opSignPublicKeyB64": "<base64-std-encoded BCRYPT_PUBLIC_KEY_BLOB>"
   }
 }
 ```
+
+**Fields**:
+- `clientPkgFamilyName` — required. Must equal `KeePassKeyWin.Provider_4fv17arhjxxvg` exactly.
+- `handshakeNonce` — required. 64-char hex nonce from `HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce`.
+- `opSignPublicKeyB64` — optional (Phase 5.UV.1+). The 72-byte `BCRYPT_ECCKEY_BLOB` for the Windows op-signing
+  public key (P-256), base64-standard encoded (RFC 4648, with padding). The plugin caches this for plugin-side
+  signature verification in Phase 5.UV.2 and 5.UV.4. Absent when the sidecar's key-fetch fails; the plugin
+  treats absence as backward-compatible (the cache is left empty). **Phase 5.UV.4 will make this field required.**
 
 **Validation**:
 1. `clientPkgFamilyName` must equal `KeePassKeyWin.Provider_4fv17arhjxxvg` exactly.
 2. `handshakeNonce` must match the value stored at `HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce` (REG_SZ).
 3. The nonce is deleted from the registry on first successful use (single-use).
+4. `opSignPublicKeyB64`, if present, must be valid base64-std. Malformed base64 is logged and silently ignored
+   (the handshake still succeeds).
 
 **Success response**:
 ```json
