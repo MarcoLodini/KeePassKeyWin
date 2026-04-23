@@ -210,13 +210,10 @@ pub struct WebauthnPluginAddAuthenticatorResponse {
 ///   offset 24: pwsz_display_hint    (LPCWSTR = *const u16, 8)
 ///   total:     32 bytes
 ///
-/// Note: SDK 8038+ also ships `WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST_2`
-/// (48 bytes), adding trailing `cbBufferToSign` + `pbBufferToSign` fields
-/// for request-signature verification. We call the non-`_2` endpoint so
-/// the above 32-byte shape is current for us. If we ever need to call
-/// `WebAuthNPluginPerformUserVerification2` (for example to participate
-/// in request-signature verification — Phase 5 backlog item) we'll need
-/// the longer struct.
+/// For calls to `WebAuthNPluginPerformUserVerification2` /
+/// `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` (Phase 5.UV.3),
+/// see [`WebauthnPluginUserVerificationRequest2`] — the 48-byte sibling
+/// that adds `cb_buffer_to_sign` + `pb_buffer_to_sign`.
 #[repr(C)]
 pub struct WebauthnPluginUserVerificationRequest {
     pub hwnd:              isize,           // HWND
@@ -227,6 +224,75 @@ pub struct WebauthnPluginUserVerificationRequest {
 
 unsafe impl Send for WebauthnPluginUserVerificationRequest {}
 unsafe impl Sync for WebauthnPluginUserVerificationRequest {}
+
+/// Maps to `EXPERIMENTAL_WEBAUTHN_PLUGIN_USER_VERIFICATION_REQUEST_2` as
+/// declared in `webauthnplugin.h` from the `microsoft/webauthn` public
+/// GitHub header (authoritative, as of the Windows SDK 10.0.26100.8117+
+/// preview NuGet and the corresponding public header on GitHub).
+///
+/// Passed to `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` /
+/// `WebAuthNPluginPerformUserVerification2` — the v2 UV entrypoint that
+/// accepts a buffer-to-sign so the plugin can independently verify the UV
+/// response signature (Phase 5.UV.3+).
+///
+/// **The `p_transaction_id` field is `REFGUID`, i.e. `const GUID*` — a
+/// pointer, NOT an inline GUID.** Same ABI shape trap as
+/// [`WebauthnPluginUserVerificationRequest`] and
+/// `WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.rclsid`. Passing
+/// an inline 16-byte Guid shifts every subsequent field by +8 and causes
+/// `STATUS_ACCESS_VIOLATION` inside `webauthn.dll`.
+///
+/// `cb_buffer_to_sign` is a `DWORD` (4 bytes) at offset 32. The next
+/// field `pb_buffer_to_sign` is a pointer (8 bytes on x64), which requires
+/// 8-byte alignment — the compiler inserts 4 bytes of padding between the
+/// two, making `pb_buffer_to_sign` land at offset 40. This is the same
+/// DWORD + padding + pointer pattern seen in
+/// `WebauthnPluginCredentialDetails` (cb_credential_id at offset 0,
+/// pb_credential_id at offset 8) and `WebauthnPluginAddAuthenticatorOptions`
+/// (cb_authenticator_info at offset 40, pb_authenticator_info at offset 48).
+///
+/// x64 layout (48 bytes total):
+///   offset  0: hwnd                 (HWND  = isize, 8)
+///   offset  8: p_transaction_id     (REFGUID = *const Guid, 8)
+///   offset 16: pwsz_username        (LPCWSTR = *const u16, 8)
+///   offset 24: pwsz_display_hint    (LPCWSTR = *const u16, 8)
+///   offset 32: cb_buffer_to_sign    (DWORD = u32, 4)
+///   [4 bytes padding for pointer alignment]
+///   offset 40: pb_buffer_to_sign    (PBYTE = *const u8, 8)
+///   total:     48 bytes
+///
+/// x86 layout (24 bytes total):
+///   offset  0: hwnd                 (isize = 4)
+///   offset  4: p_transaction_id     (*const Guid = 4)
+///   offset  8: pwsz_username        (*const u16 = 4)
+///   offset 12: pwsz_display_hint    (*const u16 = 4)
+///   offset 16: cb_buffer_to_sign    (u32 = 4)
+///   offset 20: pb_buffer_to_sign    (*const u8 = 4, no padding needed on x86)
+///   total:     24 bytes
+#[repr(C)]
+pub struct WebauthnPluginUserVerificationRequest2 {
+    /// Window handle for the UV prompt. Same as in v1.
+    pub hwnd:              isize,           // HWND
+    /// Transaction GUID pointer (`REFGUID = const GUID*`). **POINTER, not inline GUID.**
+    /// Matches the v1 REFGUID trap: passing an inline Guid here shifts every subsequent
+    /// field by +8 bytes, corrupting cb_buffer_to_sign and causing a crash.
+    pub p_transaction_id:  *const Guid,     // REFGUID = const GUID*
+    /// Username shown in the Windows Hello UV prompt (UTF-16, null-terminated).
+    pub pwsz_username:     *const u16,      // LPCWSTR
+    /// Display hint shown below the username (UTF-16, null-terminated).
+    pub pwsz_display_hint: *const u16,      // LPCWSTR
+    /// Byte length of `pb_buffer_to_sign`. On x64, 4 bytes of padding follow
+    /// this field before `pb_buffer_to_sign` to align the pointer.
+    pub cb_buffer_to_sign: u32,             // DWORD
+    /// Pointer to the buffer whose SHA-256 digest was signed by the sidecar.
+    /// Caller computes `SHA-256(pbEncodedRequest)` and passes the 32-byte
+    /// digest here. The Windows runtime signs this buffer and returns the
+    /// opaque signature via `ppbResponse` for plugin-side verification.
+    pub pb_buffer_to_sign: *const u8,       // PBYTE
+}
+
+unsafe impl Send for WebauthnPluginUserVerificationRequest2 {}
+unsafe impl Sync for WebauthnPluginUserVerificationRequest2 {}
 
 /// Maps to `WEBAUTHN_PLUGIN_CREDENTIAL_DETAILS` as declared in
 /// `webauthnplugin.h` from Windows SDK 10.0.26100.0 (lines 242-270 of the
@@ -422,6 +488,40 @@ mod abi_tests {
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, p_transaction_id), 8);
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_username),    16);
             assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest, pwsz_display_hint), 24);
+        }
+    }
+
+    #[test]
+    fn user_verification_request_2_size() {
+        // Authoritative shape from `microsoft/webauthn` public webauthnplugin.h:
+        //   x64: isize(8)@0 + *const Guid(8)@8 + ptr(8)@16 + ptr(8)@24
+        //        + DWORD(4)@32 + pad(4) + ptr(8)@40 = 48 bytes
+        //   x86: isize(4)@0 + *const Guid(4)@4 + ptr(4)@8  + ptr(4)@12
+        //        + DWORD(4)@16 + ptr(4)@20 = 24 bytes (no padding on x86)
+        // `p_transaction_id` is REFGUID (pointer), NOT inline GUID — same trap
+        // as in WebauthnPluginUserVerificationRequest and rclsid in
+        // WEBAUTHN_PLUGIN_ADD_AUTHENTICATOR_OPTIONS.
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest2>(), 48);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(size_of::<WebauthnPluginUserVerificationRequest2>(), 24);
+    }
+
+    #[test]
+    fn user_verification_request_2_field_offsets() {
+        // Offsets verified against the C struct layout in webauthnplugin.h.
+        // On x64: pointers are 8B, DWORD is 4B with 4B of trailing padding
+        // before the next pointer to maintain 8B alignment.
+        assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, hwnd), 0);
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, p_transaction_id),  8);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, pwsz_username),     16);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, pwsz_display_hint), 24);
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, cb_buffer_to_sign), 32);
+            // pb_buffer_to_sign is at offset 40, not 36, because the 4-byte DWORD at
+            // offset 32 is followed by 4 bytes of padding to align the pointer to 8.
+            assert_eq!(offset_of!(WebauthnPluginUserVerificationRequest2, pb_buffer_to_sign), 40);
         }
     }
 
