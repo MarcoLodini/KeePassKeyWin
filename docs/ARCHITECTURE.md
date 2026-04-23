@@ -60,14 +60,28 @@ Methods (sidecar → plugin):
 
 | Method | Purpose |
 |---|---|
-| `keepasskeywin.hello` | Handshake: client pkg family name + HKCU nonce |
-| `keepasskeywin.createPasskey` | Generate + store a new passkey |
+| `keepasskeywin.hello` | Handshake: client pkg family name + HKCU nonce + op-sign pubkey blob (5.UV.1+) |
+| `keepasskeywin.makeCredentialRaw` | Forward raw CTAP2 `authenticatorMakeCredential` (dispatch path) |
+| `keepasskeywin.getAssertionRaw` | Forward raw CTAP2 `authenticatorGetAssertion` (dispatch path) |
+| `keepasskeywin.createPasskey` | Generate + store a new passkey (legacy; plugin-internal helper) |
 | `keepasskeywin.listCredentials` | Enumerate credentials for an RP |
-| `keepasskeywin.signAssertion` | Sign authData / clientDataHash |
+| `keepasskeywin.signAssertion` | Sign authData / clientDataHash (legacy; plugin-internal helper) |
 | `keepasskeywin.deleteCredential` | Remove a credential |
 | `keepasskeywin.enumerateForSync` | Full list for Windows Settings mirror |
 
 Errors are JSON-RPC error envelopes mapped to CTAP2 status codes inside the sidecar.
+
+### Trust boundary (Phase 5.UV.2 onward)
+
+Every `makeCredentialRaw` / `getAssertionRaw` call carries `pbRequestSignatureB64`
+— Windows' op-signing signature over the raw `pbEncodedRequest` bytes — so the
+plugin re-verifies the request itself rather than trusting the sidecar's
+verification. The op-signing public key is delivered to the plugin during the
+hello handshake (`opSignPublicKeyB64`) and cached for the process lifetime in
+`OpSignPubKeyCache`. The sidecar still verifies the same signature server-side
+through 5.UV.2 as belt-and-braces; the sidecar gate is removed in 5.UV.5 once
+the plugin gate is the sole verifier. See `IPC_PROTOCOL.md` for the field
+schema. A dedicated trust-model section lands in 5.UV.6.
 
 ## Storage schema
 

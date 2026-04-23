@@ -102,6 +102,55 @@ Documented here as stubs; full parameter and result schemas are added by plugin-
 
 Until plugin-core wires these up, each returns `-32601 MethodNotFound`.
 
+## Raw CTAP2 methods (post-handshake, dispatch path)
+
+The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards every
+`MakeCredential` / `GetAssertion` from `webauthn.dll` to the plugin via these methods.
+
+### `keepasskeywin.makeCredentialRaw` and `keepasskeywin.getAssertionRaw`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "keepasskeywin.makeCredentialRaw",
+  "params": {
+    "cbor": "<base64-std of the CTAP2 input bytes (== pbEncodedRequest)>",
+    "uv": true,
+    "pbRequestSignatureB64": "<base64-std of the IEEE-P1363 ECDSA-P256 signature>"
+  }
+}
+```
+
+**Fields**:
+- `cbor` — required. Base64-std of the raw `pbEncodedRequest` bytes (the CTAP2
+  authenticatorMakeCredential / authenticatorGetAssertion input map). The plugin
+  hashes these bytes with SHA-256 to recover the message digest covered by
+  `pbRequestSignature`.
+- `uv` — required. Boolean reflecting the result of the Windows Hello UV prompt
+  the sidecar performed before forwarding. Currently trusted as-is by the plugin
+  (Phase 5.UV.4 will re-verify the UV signature plugin-side).
+- `pbRequestSignatureB64` — required (Phase 5.UV.2+). Base64-std of the raw
+  `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature` bytes. The plugin verifies
+  this against `OpSignPubKeyCache.Current` (populated from the hello handshake)
+  using ECDSA-P256 + SHA-256 in IEEE-P1363 raw format. **The plugin rejects the
+  request if any of the following is true**:
+  - The op-sign pubkey cache is empty (typically: hello did not include
+    `opSignPublicKeyB64`).
+  - `pbRequestSignatureB64` is missing, empty, or not valid base64-std.
+  - `EcdsaVerifier.Verify(cache, cborBytes, signatureBytes)` returns false.
+
+  Setting `KEEPASSKEYWIN_SKIP_PLUGIN_SIG_VERIFY=1` (or `true` / `yes`) on the
+  plugin process bypasses the gate entirely — for development only.
+
+**Belt-and-braces**: the sidecar still verifies the same signature server-side
+(`com::request_sig::verify_request_signature`) through Phase 5.UV.2. The
+sidecar-side gate is removed in Phase 5.UV.5 once the plugin-side gate is the
+sole source of truth.
+
+**Result shape**: `{ "cbor": "<base64-std of the CTAP2 response>" }` plus
+makeCredential-only metadata fields documented in the C# `VaultHandler`.
+
 ## Nonce lifecycle
 
 ```
