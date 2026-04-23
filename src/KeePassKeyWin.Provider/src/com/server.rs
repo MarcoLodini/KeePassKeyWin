@@ -362,12 +362,18 @@ pub(crate) mod imp {
         // Verify pbRequestSignature before popping the Windows Hello UV prompt.
         // This ensures a forged/unauthenticated request cannot cause a UV
         // dialog to appear or reach the KeePass vault over IPC.
+        //
+        // 5.UV.2: sig bytes are also forwarded to the C# plugin (via the
+        // pbRequestSignatureB64 IPC param below) so the plugin re-verifies
+        // independently. Sidecar gate stays as belt-and-braces; it is removed
+        // in 5.UV.5 once the plugin is the sole verifier.
+        let sig_bytes: &[u8] = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
+            unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
+        } else {
+            &[]
+        };
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig_bytes);
         {
-            let sig_bytes = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
-                unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
-            } else {
-                &[]
-            };
             let sig_hr = crate::com::request_sig::verify_request_signature(sig_bytes, cbor_bytes);
             if sig_hr.is_err() {
                 tracing::warn!("[sig-verify] REJECT {method} hr=0x{:08x}", sig_hr.0 as u32);
@@ -425,7 +431,15 @@ pub(crate) mod imp {
             }
         };
 
-        let params = serde_json::json!({ "cbor": cbor_b64, "uv": true });
+        // 5.UV.2: pbRequestSignatureB64 lets the plugin re-verify independently
+        // of the sidecar. Empty string when the request had no signature (the
+        // sidecar gate above would have already rejected such a request, so the
+        // plugin should never see this case in practice — sent for completeness).
+        let params = serde_json::json!({
+            "cbor": cbor_b64,
+            "uv": true,
+            "pbRequestSignatureB64": sig_b64,
+        });
         let method_owned = method.to_string();
         dbg_step!("RPC call {method} (cbor {}B) ...", cbor_bytes.len());
         let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
