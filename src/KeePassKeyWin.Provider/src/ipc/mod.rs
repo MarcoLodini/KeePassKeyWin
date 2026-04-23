@@ -166,18 +166,35 @@ impl PipeClient {
     }
 
     /// Send `keepasskeywin.hello` with the given package family name and nonce.
+    ///
+    /// Since 5.UV.1, the params also include `opSignPublicKeyB64`: the
+    /// base64-std-encoded `BCRYPT_PUBLIC_KEY_BLOB` bytes of the Windows
+    /// op-signing public key. The plugin caches them for later use in
+    /// plugin-side signature verification (5.UV.2 / 5.UV.4).
+    /// If the key-fetch fails, the field is omitted and a warning is logged;
+    /// the plugin treats the field as optional for backward-compat in 5.UV.1.
     pub async fn handshake(
         &mut self,
         client_pkg_family: &str,
         nonce: &str,
     ) -> Result<(), ClientError> {
+        use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+        use crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello;
+
         #[derive(Serialize)]
         struct HelloParams<'a> {
             #[serde(rename = "clientPkgFamilyName")]
             client_pkg_family_name: &'a str,
             #[serde(rename = "handshakeNonce")]
             handshake_nonce: &'a str,
+            /// Op-signing public key bytes (BCRYPT_PUBLIC_KEY_BLOB), base64-std encoded.
+            /// Optional: absent when the key-fetch fails (pre-5.UV.1 compat for the plugin).
+            #[serde(rename = "opSignPublicKeyB64", skip_serializing_if = "Option::is_none")]
+            op_sign_public_key_b64: Option<String>,
         }
+
+        let op_sign_public_key_b64 = get_op_sign_pub_key_bytes_for_hello()
+            .map(|bytes| BASE64_STANDARD.encode(&bytes));
 
         let _: serde_json::Value = self
             .call(
@@ -185,6 +202,7 @@ impl PipeClient {
                 HelloParams {
                     client_pkg_family_name: client_pkg_family,
                     handshake_nonce: nonce,
+                    op_sign_public_key_b64,
                 },
             )
             .await?;

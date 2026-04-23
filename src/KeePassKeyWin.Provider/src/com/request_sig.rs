@@ -426,6 +426,29 @@ fn verify_with_ncrypt(
     }
 }
 
+// ── Crate-internal helper for hello-params key distribution ─────────────────
+
+/// Returns the operation-signing public key bytes for inclusion in the
+/// `keepasskeywin.hello` params as `opSignPublicKeyB64` (Phase 5.UV.1).
+///
+/// Returns `Some(bytes)` when the key has already been fetched (or can be
+/// fetched now successfully). Returns `None` on any error — the caller should
+/// log a `warn!` and send hello without the field for backward-compat
+/// (the plugin treats the field as optional in 5.UV.1).
+pub(crate) fn get_op_sign_pub_key_bytes_for_hello() -> Option<Vec<u8>> {
+    match get_signing_key_bytes() {
+        Ok(bytes) => Some(bytes.clone()),
+        Err(hr) => {
+            tracing::warn!(
+                "[sig-verify] op-sign key unavailable for hello params (hr=0x{:08x}); \
+                 sidecar will send hello without opSignPublicKeyB64",
+                hr.0 as u32
+            );
+            None
+        }
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Verify the `pbRequestSignature` field of an operation request against the
