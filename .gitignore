@@ -1,6 +1,7 @@
 # C# / .NET build output
 bin/
 obj/
+tmp/
 *.user
 *.suo
 *.userprefs
