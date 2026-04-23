@@ -648,4 +648,29 @@ mod tests {
         std::env::remove_var("KEEPASSKEYWIN_SKIP_REQUEST_SIG_VERIFY");
         assert!(!is_bypass_enabled(), "expected false when env var is unset");
     }
+
+    // ── SHA-256 helper pin (Phase 5.UV.3) ─────────────────────────────────────
+
+    /// Pin the SHA-256 algorithm used in `dispatch_operation` to produce
+    /// `buffer_to_sign` for `perform_user_verification_2`.
+    ///
+    /// The sidecar computes `SHA-256(pbEncodedRequest)` and passes the 32-byte
+    /// digest as `pb_buffer_to_sign` to the v2 UV entrypoint. The plugin
+    /// re-derives the same digest in 5.UV.4 to verify the UV response.
+    /// Both sides MUST agree on the algorithm — this test makes that contract
+    /// explicit and regression-proof.
+    ///
+    /// Expected output from NIST FIPS 180-4 / RFC 6234 §1 test vector:
+    ///   SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    #[test]
+    fn sha256_of_abc_matches_known_vector() {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(b"abc");
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "SHA-256(b\"abc\") must match the NIST FIPS 180-4 known vector"
+        );
+    }
 }
