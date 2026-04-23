@@ -43,8 +43,10 @@ namespace KeePassKeyWin.Core.Crypto
         /// 72-byte <c>BCRYPT_ECCKEY_BLOB</c> with magic <c>0x31534345</c> (P-256 public key).
         /// </param>
         /// <param name="payload">
-        /// Raw bytes over which SHA-256 is computed before verifying.
-        /// An empty payload returns false (no exception).
+        /// Raw bytes over which SHA-256 is computed before verifying. An empty
+        /// payload is rejected explicitly (returns false, no exception): in our
+        /// use case the verifier always operates on non-empty CTAP2 request
+        /// bytes, so an empty payload indicates a programmer error upstream.
         /// </param>
         /// <param name="signature">
         /// 64-byte IEEE P1363 raw signature (<c>r || s</c>, each 32 bytes).
@@ -59,8 +61,10 @@ namespace KeePassKeyWin.Core.Crypto
             ReadOnlySpan<byte> payload,
             ReadOnlySpan<byte> signature)
         {
-            // Reject obviously-bad inputs without touching crypto.
-            if (pubKeyBlob.IsEmpty || signature.IsEmpty)
+            // Reject obviously-bad inputs without touching crypto. Empty payload
+            // is included here so the doc/code contract matches: legitimate
+            // CTAP2 request bytes are never empty at this call site.
+            if (pubKeyBlob.IsEmpty || payload.IsEmpty || signature.IsEmpty)
                 return false;
 
             try
@@ -116,9 +120,6 @@ namespace KeePassKeyWin.Core.Crypto
                 Q = new ECPoint { X = x, Y = y },
             });
 
-            // Empty payload is a valid cryptographic input but the brief documents
-            // returning false for it; handle via the normal path — SHA-256 of empty
-            // bytes is well-defined and an invalid signature will return false normally.
             return ecdsa.VerifyData(payload, signature,
                 HashAlgorithmName.SHA256,
                 DSASignatureFormat.IeeeP1363FixedFieldConcatenation);

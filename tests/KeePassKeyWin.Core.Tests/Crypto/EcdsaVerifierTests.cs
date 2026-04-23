@@ -174,10 +174,12 @@ namespace KeePassKeyWin.Core.Tests.Crypto
         /// <summary>
         /// Documented behavior for empty payload: returns false without throwing.
         ///
-        /// SHA-256 of an empty byte string is well-defined (e8b02e5...), but the
-        /// signature was produced over a different payload — so verification fails.
-        /// This case documents that <see cref="EcdsaVerifier.Verify"/> does not throw
-        /// for an empty payload.
+        /// The verifier rejects empty payload explicitly at the input-validation
+        /// gate (alongside empty pubkey blob and empty signature) rather than
+        /// reaching the underlying <c>ECDsa.VerifyData</c> call — this matches
+        /// the documented contract and avoids the surprising edge case where
+        /// SHA-256 of an empty byte string is well-defined but the signature
+        /// was produced over different bytes.
         /// </summary>
         [Fact]
         public void Verify_EmptyPayload_ReturnsFalseAndDoesNotThrow()
