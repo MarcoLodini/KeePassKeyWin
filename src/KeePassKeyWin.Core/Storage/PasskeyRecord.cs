@@ -13,7 +13,8 @@ namespace KeePassKeyWin.Core.Storage
         public string UserHandle { get; set; } = string.Empty;     // Base64URL
         public string UserName { get; set; } = string.Empty;
         public string UserDisplayName { get; set; } = string.Empty;
-        public int AlgId { get; set; } = -7;                       // COSE alg; -7 = ES256
+        /// <summary>COSE algorithm identifier. Valid values: -7 (ES256) or -257 (RS256).</summary>
+        public int AlgId { get; set; } = -7;
         public string PrivateKeyPkcs8 { get; set; } = string.Empty;// Base64, protected
         public byte[] PublicKeyCose { get; set; } = Array.Empty<byte>(); // CTAP2 CBOR
         public string Transports { get; set; } = "internal";       // comma-separated

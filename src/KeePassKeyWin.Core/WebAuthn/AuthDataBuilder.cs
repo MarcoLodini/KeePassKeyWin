@@ -2,7 +2,6 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using KeePassKeyWin.Core.Cbor;
 
 namespace KeePassKeyWin.Core.WebAuthn
 {
@@ -30,21 +29,19 @@ namespace KeePassKeyWin.Core.WebAuthn
         /// </summary>
         /// <param name="rpId">The RP ID (e.g. "example.com").</param>
         /// <param name="credentialId">The raw credential ID bytes.</param>
-        /// <param name="x">32-byte P-256 public key X coordinate.</param>
-        /// <param name="y">32-byte P-256 public key Y coordinate.</param>
+        /// <param name="coseKey">Pre-encoded CTAP2-canonical COSE_Key CBOR bytes.</param>
         /// <param name="userVerified">True if Windows Hello UV succeeded.</param>
-        public static byte[] Build(string rpId, byte[] credentialId, byte[] x, byte[] y, bool userVerified)
+        public static byte[] Build(string rpId, byte[] credentialId, byte[] coseKey, bool userVerified)
         {
             if (rpId == null) throw new ArgumentNullException(nameof(rpId));
             if (credentialId == null || credentialId.Length == 0) throw new ArgumentException("credentialId must not be empty.", nameof(credentialId));
             if (credentialId.Length > 0xFFFF) throw new ArgumentException("credentialId exceeds maximum length of 65535.", nameof(credentialId));
+            if (coseKey == null || coseKey.Length == 0) throw new ArgumentException("coseKey must not be empty.", nameof(coseKey));
 
             var rpIdHash = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(rpId));
 
             byte flags = FlagUP | FlagAT;
             if (userVerified) flags |= FlagUV;
-
-            var coseKey = CoseKey.Encode(x, y);
 
             // Total length: 32 + 1 + 4 + 16 + 2 + credId.Length + coseKey.Length
             using var ms = new MemoryStream(32 + 1 + 4 + 16 + 2 + credentialId.Length + coseKey.Length);

@@ -7,6 +7,10 @@ using KeePassKeyWin.Core.Crypto;
 using KeePassKeyWin.Core.Storage;
 using KeePassKeyWin.Core.WebAuthn;
 
+// Supported COSE algorithm identifiers.
+// ES256 = -7  (ECDSA P-256 / SHA-256)
+// RS256 = -257 (RSASSA-PKCS1-v1_5 / SHA-256, RFC 8230)
+
 namespace KeePassKeyWin.Core.Ipc
 {
     /// <summary>
@@ -60,8 +64,8 @@ namespace KeePassKeyWin.Core.Ipc
             var userName        = RequireString(obj, "userName");
             var userDisplayName = OptionalString(obj, "userDisplayName") ?? userName;
 
-            var (pkcs8, x, y) = EcdsaSigner.GenerateKeyPair();
-            var coseKey = CoseKey.Encode(x, y);
+            // CreatePasskey has no pubKeyCredParams input — default to ES256.
+            var (pkcs8, coseKey) = GenerateKeyPairAndCoseKey(-7);
 
             // 32 random bytes as credential ID.
             var rawCredId = new byte[32];
@@ -73,7 +77,7 @@ namespace KeePassKeyWin.Core.Ipc
             var authData = AuthDataBuilder.Build(
                 rpId,
                 rawCredId,
-                x, y,
+                coseKey,
                 userVerified: true);
 
             var record = new PasskeyRecord
@@ -145,9 +149,13 @@ namespace KeePassKeyWin.Core.Ipc
                         $"A credential matching the exclude list is already registered: {excludedId}");
             }
 
-            // Generate EC P-256 key pair and credential ID.
-            var (pkcs8, x, y) = EcdsaSigner.GenerateKeyPair();
-            var coseKey = CoseKey.Encode(x, y);
+            // Select algorithm: prefer ES256 when both offered; fall back to RS256 if ES256 absent.
+            // Tiebreaker policy: ES256 produces smaller keys (~77 B vs ~270 B for RS256-2048)
+            // and faster sign operations — prefer it whenever the RP accepts it.
+            int selectedAlg = SelectAlgorithm(req.RequestedAlgs);
+
+            // Generate key pair and COSE_Key for the selected algorithm.
+            var (pkcs8, coseKey) = GenerateKeyPairAndCoseKey(selectedAlg);
 
             var rawCredId = new byte[32];
             using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
@@ -158,7 +166,7 @@ namespace KeePassKeyWin.Core.Ipc
             var authData = AuthDataBuilder.Build(
                 req.RpId,
                 rawCredId,
-                x, y,
+                coseKey,
                 userVerified: uv);
 
             // Persist the new credential.
@@ -170,7 +178,7 @@ namespace KeePassKeyWin.Core.Ipc
                 UserHandle      = req.UserHandle,
                 UserName        = req.UserName,
                 UserDisplayName = req.UserDisplayName,
-                AlgId           = -7,
+                AlgId           = selectedAlg,
                 PrivateKeyPkcs8 = Convert.ToBase64String(pkcs8),
                 PublicKeyCose   = coseKey,
             };
@@ -302,13 +310,13 @@ namespace KeePassKeyWin.Core.Ipc
             // Build 37-byte assertion authData (no attested credential data).
             var authData = AuthDataBuilder.BuildAssertion(selected.RpId, userVerified: uv, signCount: newCount);
 
-            // WebAuthn §7.2: the ES256 signature covers authData || clientDataHash.
+            // WebAuthn §7.2: signature covers authData || clientDataHash.
             var signInput = new byte[authData.Length + req.ClientDataHash.Length];
             Buffer.BlockCopy(authData, 0, signInput, 0, authData.Length);
             Buffer.BlockCopy(req.ClientDataHash, 0, signInput, authData.Length, req.ClientDataHash.Length);
 
             var pkcs8 = Convert.FromBase64String(selected.PrivateKeyPkcs8);
-            var signature = EcdsaSigner.Sign(pkcs8, signInput);
+            var signature = SignWithAlgorithm(pkcs8, signInput, selected.AlgId);
 
             // Convert the selected credential's stored base64url-no-pad ID back to raw
             // bytes to echo in the response descriptor (CTAP2 allows only raw bstr).
@@ -543,7 +551,7 @@ namespace KeePassKeyWin.Core.Ipc
             string? userHandle     = null; // base64url
             string? userName       = null;
             string? userDisplayName = null;
-            bool hasEs256          = false;
+            var requestedAlgs      = new List<int>();
             var excludeList        = new List<string>();
 
             for (int i = 0; i < mapCount; i++)
@@ -592,7 +600,7 @@ namespace KeePassKeyWin.Core.Ipc
                         break;
                     }
 
-                    case 4: // pubKeyCredParams — array of {type, alg}; must contain ES256 (-7)
+                    case 4: // pubKeyCredParams — array of {type, alg}; collect supported alg IDs
                     {
                         int arrCount = reader.ReadArrayHeader();
                         for (int k = 0; k < arrCount; k++)
@@ -604,14 +612,24 @@ namespace KeePassKeyWin.Core.Ipc
                             {
                                 string field = reader.ReadTextString();
                                 if (field == "alg")
-                                    algId = reader.ReadNegativeInt();
+                                {
+                                    // alg is always a negative integer for our supported algs,
+                                    // but the CBOR value may be any integer type. Use PeekMajorType
+                                    // to handle unsigned (positive) alg IDs gracefully — filter them
+                                    // out as unknown rather than throwing.
+                                    if (reader.PeekMajorType() == 1)
+                                        algId = reader.ReadNegativeInt();
+                                    else
+                                        reader.SkipValue(); // positive / unknown alg — not supported
+                                }
                                 else if (field == "type")
                                     paramType = reader.ReadTextString();
                                 else
                                     reader.SkipValue();
                             }
-                            if (algId == -7 && paramType == "public-key")
-                                hasEs256 = true;
+                            // Collect only alg IDs we support: -7 (ES256), -257 (RS256).
+                            if (paramType == "public-key" && (algId == -7 || algId == -257))
+                                requestedAlgs.Add((int)algId.Value);
                         }
                         break;
                     }
@@ -652,9 +670,9 @@ namespace KeePassKeyWin.Core.Ipc
                 throw new RpcException(RpcErrorCode.InvalidParams, "keepasskeywin.makeCredentialRaw: missing required user.id in key 3 (user map).");
             if (string.IsNullOrEmpty(userName))
                 throw new RpcException(RpcErrorCode.InvalidParams, "keepasskeywin.makeCredentialRaw: missing required user.name in key 3 (user map).");
-            if (!hasEs256)
+            if (requestedAlgs.Count == 0)
                 throw new RpcException(RpcErrorCode.UnsupportedAlgorithm,
-                    "keepasskeywin.makeCredentialRaw: no supported algorithm found in pubKeyCredParams (ES256/-7 required).");
+                    "keepasskeywin.makeCredentialRaw: no supported algorithm found in pubKeyCredParams (supported: -7 ES256, -257 RS256).");
 
             return new MakeCredentialRequest
             {
@@ -665,6 +683,7 @@ namespace KeePassKeyWin.Core.Ipc
                 UserName        = userName!,
                 UserDisplayName = string.IsNullOrEmpty(userDisplayName) ? userName! : userDisplayName!,
                 ExcludeList     = excludeList,
+                RequestedAlgs   = requestedAlgs,
             };
         }
 
@@ -704,6 +723,51 @@ namespace KeePassKeyWin.Core.Ipc
             public string      UserName        { get; set; } = string.Empty;
             public string      UserDisplayName { get; set; } = string.Empty;
             public List<string> ExcludeList    { get; set; } = new List<string>();
+            public List<int>   RequestedAlgs   { get; set; } = new List<int>();
+        }
+
+        // Selects the algorithm to use for a new credential.
+        // Tiebreaker: prefer ES256 (-7) over RS256 (-257) when both are offered.
+        // ES256 produces smaller COSE_Key blobs (~77 B vs ~270 B for RSA-2048) and
+        // smaller signatures. ES256 is what all modern RPs prefer anyway.
+        // Falls back to RS256 if ES256 is not in the offered set.
+        // Throws UnsupportedAlgorithm if neither supported alg is present.
+        private static int SelectAlgorithm(List<int> requestedAlgs)
+        {
+            if (requestedAlgs.Contains(-7))
+                return -7;
+            if (requestedAlgs.Contains(-257))
+                return -257;
+            throw new RpcException(RpcErrorCode.UnsupportedAlgorithm,
+                "keepasskeywin.makeCredentialRaw: no supported algorithm found in pubKeyCredParams (supported: -7 ES256, -257 RS256).");
+        }
+
+        // Generates a keypair for the given COSE alg ID and returns (pkcs8, coseKeyBytes).
+        private static (byte[] pkcs8, byte[] coseKey) GenerateKeyPairAndCoseKey(int algId)
+        {
+            if (algId == -7)
+            {
+                var (pkcs8, x, y) = EcdsaSigner.GenerateKeyPair();
+                return (pkcs8, CoseKey.Encode(x, y));
+            }
+            if (algId == -257)
+            {
+                var (pkcs8, n, e) = RsaSigner.GenerateKeyPair();
+                return (pkcs8, CoseKey.EncodeRsa(n, e));
+            }
+            throw new RpcException(RpcErrorCode.UnsupportedAlgorithm,
+                $"GenerateKeyPairAndCoseKey: unsupported algId {algId}.");
+        }
+
+        // Signs data using the stored credential's algorithm.
+        private static byte[] SignWithAlgorithm(byte[] pkcs8, byte[] data, int algId)
+        {
+            if (algId == -7)
+                return EcdsaSigner.Sign(pkcs8, data);
+            if (algId == -257)
+                return RsaSigner.Sign(pkcs8, data);
+            throw new RpcException(RpcErrorCode.UnsupportedAlgorithm,
+                $"SignWithAlgorithm: unsupported algId {algId}.");
         }
 
         // keepasskeywin.listCredentials
@@ -762,7 +826,7 @@ namespace KeePassKeyWin.Core.Ipc
             Buffer.BlockCopy(clientDataHash, 0, signInput, authDataBytes.Length, clientDataHash.Length);
 
             var pkcs8 = Convert.FromBase64String(record.PrivateKeyPkcs8);
-            var signature = EcdsaSigner.Sign(pkcs8, signInput);
+            var signature = SignWithAlgorithm(pkcs8, signInput, record.AlgId);
 
             // Build assertion authData (no AT bit, signCount=0).
             var assertionAuthData = AuthDataBuilder.BuildAssertion(record.RpId, userVerified: true);

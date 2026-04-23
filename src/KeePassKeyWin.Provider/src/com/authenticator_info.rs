@@ -69,6 +69,10 @@ pub fn authenticator_get_info_cbor() -> Vec<u8> {
             (Value::Text("alg".into()),  Value::Integer((-7i64).into())),
             (Value::Text("type".into()), Value::Text("public-key".into())),
         ]),
+        Value::Map(vec![
+            (Value::Text("alg".into()),  Value::Integer((-257i64).into())),
+            (Value::Text("type".into()), Value::Text("public-key".into())),
+        ]),
     ]);
 
     let info = Value::Map(vec![
@@ -187,5 +191,39 @@ mod tests {
             })
         });
         assert!(has_es256, "algorithms must include ES256 (alg = -7)");
+
+        // RS256 (alg = -257) must be advertised.
+        let has_rs256 = algorithms.iter().any(|entry| {
+            let Value::Map(fields) = entry else { return false };
+            fields.iter().any(|(k, v)| {
+                matches!((k, v), (Value::Text(n), Value::Integer(i))
+                    if n == "alg" && i64::try_from(*i) == Ok(-257))
+            })
+        });
+        assert!(has_rs256, "algorithms must include RS256 (alg = -257)");
+    }
+
+    #[test]
+    fn algorithms_include_rs256() {
+        let map = decode();
+        let algorithms = match get(&map, 10) {
+            Value::Array(a) => a,
+            other => panic!("key 10 (algorithms) should be array, got {other:?}"),
+        };
+        let rs256_entry = algorithms.iter().find(|entry| {
+            let Value::Map(fields) = entry else { return false };
+            fields.iter().any(|(k, v)| {
+                matches!((k, v), (Value::Text(n), Value::Integer(i))
+                    if n == "alg" && i64::try_from(*i) == Ok(-257))
+            })
+        });
+        assert!(rs256_entry.is_some(), "RS256 entry missing from algorithms");
+
+        // Verify the RS256 entry also has type = "public-key".
+        let Value::Map(fields) = rs256_entry.unwrap() else { panic!("expected map") };
+        let has_public_key_type = fields.iter().any(|(k, v)| {
+            matches!((k, v), (Value::Text(n), Value::Text(t)) if n == "type" && t == "public-key")
+        });
+        assert!(has_public_key_type, "RS256 entry must have type = \"public-key\"");
     }
 }

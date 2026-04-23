@@ -270,15 +270,96 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             Assert.True((flags & 0x04) == 0, "UV should default to false when param absent.");
         }
 
-        // ── Error: unsupported algorithm ─────────────────────────────────────
+        // ── Algorithm selection ───────────────────────────────────────────────
 
         [Fact]
-        public void MissingES256_ThrowsUnsupportedAlgorithm()
+        public void Rs256Only_Succeeds_AndStoresRs256AlgId()
         {
-            // Use COSE alg -257 (RS256) only — no ES256.
+            // pubKeyCredParams contains only RS256 (-257) — no ES256. Must succeed.
             var algEntry = MapOf(
                 (T("type"), T("public-key")),
                 (T("alg"),  N(-257)));
+
+            var clientDataHash = new byte[32];
+            var userId         = new byte[16];
+
+            var rpMap = MapOf((T("id"), T("example.com")), (T("name"), T("Example RP")));
+            var userMap = MapOf(
+                (T("id"),          B(userId)),
+                (T("name"),        T("user@example.com")),
+                (T("displayName"), T("User")));
+            var pubKeyCredParams = ArrayOf(algEntry);
+
+            var w = new CborWriter();
+            w.WriteMap(new[]
+            {
+                (U(1), B(clientDataHash)),
+                (U(2), rpMap),
+                (U(3), userMap),
+                (U(4), pubKeyCredParams),
+                (U(5), EmptyArray()),
+            });
+            var cborBytes = w.Encode();
+
+            var handler = MakeHandler(out var store);
+            var result = handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
+            {
+                ["cbor"] = Convert.ToBase64String(cborBytes),
+                ["uv"]   = false,
+            });
+
+            Assert.NotNull(result);
+            var all = store.GetAll();
+            Assert.Single(all);
+            Assert.Equal(-257, all[0].AlgId);
+        }
+
+        [Fact]
+        public void Es256AndRs256_Offered_PicksEs256()
+        {
+            // When both ES256 and RS256 are offered, ES256 must be selected (tiebreaker).
+            var algEs256 = MapOf((T("type"), T("public-key")), (T("alg"), N(-7)));
+            var algRs256 = MapOf((T("type"), T("public-key")), (T("alg"), N(-257)));
+
+            var clientDataHash = new byte[32];
+            var userId         = new byte[16];
+
+            var rpMap   = MapOf((T("id"), T("example.com")), (T("name"), T("Example RP")));
+            var userMap = MapOf(
+                (T("id"),          B(userId)),
+                (T("name"),        T("user@example.com")),
+                (T("displayName"), T("User")));
+            var pubKeyCredParams = ArrayOf(algEs256, algRs256);
+
+            var w = new CborWriter();
+            w.WriteMap(new[]
+            {
+                (U(1), B(clientDataHash)),
+                (U(2), rpMap),
+                (U(3), userMap),
+                (U(4), pubKeyCredParams),
+                (U(5), EmptyArray()),
+            });
+
+            var handler = MakeHandler(out var store);
+            handler.Handle("keepasskeywin.makeCredentialRaw", new JObject
+            {
+                ["cbor"] = Convert.ToBase64String(w.Encode()),
+                ["uv"]   = false,
+            });
+
+            var all = store.GetAll();
+            Assert.Single(all);
+            Assert.Equal(-7, all[0].AlgId);
+        }
+
+        [Fact]
+        public void UnsupportedAlgOnly_ThrowsUnsupportedAlgorithm()
+        {
+            // Only an unknown/unsupported alg (e.g. EdDSA -8) — neither ES256 nor RS256.
+            var algEntry = MapOf(
+                (T("type"), T("public-key")),
+                (T("alg"),  N(-8)));  // EdDSA — not supported
 
             var clientDataHash = new byte[32];
             var userId         = new byte[16];

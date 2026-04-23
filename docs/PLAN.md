@@ -118,7 +118,7 @@ Live browser E2E PASSED on Win11 25H2 build 26200.8037. Login at webauthn.io via
 
 ## Phase 5 — Polish + RS256 + deferred hardening
 
-- [ ] RS256 (COSE `-257`) algorithm support
+- [x] RS256 (COSE `-257`) algorithm support — ES256 preferred via tiebreaker; RS256 selectable when RP excludes ES256; both advertised in `authenticatorGetInfo`
 - [ ] Plugin UI: list / delete passkeys from inside KeePass
 - [ ] Sidecar confirmation UI when KeePass is minimized
 - [ ] `credProps` extension

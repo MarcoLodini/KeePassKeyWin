@@ -77,7 +77,7 @@ namespace KeePassKeyWin.Plugin.UI
                 ("Relying Party",  Get("KeePassKeyWin.rpId")),
                 ("User name",      Get("KeePassKeyWin.userName")),
                 ("Display name",   Get("KeePassKeyWin.userDisplayName")),
-                ("Algorithm",      GetCustom("KeePassKeyWin.algId") == "-7" ? "ES256 (-7)" : GetCustom("KeePassKeyWin.algId")),
+                ("Algorithm",      GetCustom("KeePassKeyWin.algId") switch { "-7" => "ES256 (-7)", "-257" => "RS256 (-257)", var v => v }),
                 ("Transports",     GetCustom("KeePassKeyWin.transports")),
                 ("Created",        GetCustom("KeePassKeyWin.creationTime")),
                 ("Last used",      GetCustom("KeePassKeyWin.lastUsedTime")),

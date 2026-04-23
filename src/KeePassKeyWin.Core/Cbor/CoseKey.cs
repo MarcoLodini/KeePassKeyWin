@@ -3,7 +3,7 @@ using System;
 namespace KeePassKeyWin.Core.Cbor
 {
     /// <summary>
-    /// COSE_Key encoding for ES256 (ECDSA P-256, COSE alg -7).
+    /// COSE_Key encoding for ES256 (ECDSA P-256, COSE alg -7) and RS256 (RSA-2048, COSE alg -257).
     /// Produces the CTAP2-canonical CBOR representation stored in PwEntry Binaries.
     /// </summary>
     public static class CoseKey
@@ -16,9 +16,15 @@ namespace KeePassKeyWin.Core.Cbor
         private const int YLabel   = -3;   // Y coordinate
 
         // Values for ES256 P-256.
-        private const int KtyEc2  = 2;    // kty = EC2
-        private const int AlgEs256 = -7;  // alg = ES256
-        private const int CrvP256 = 1;    // crv = P-256
+        private const int KtyEc2   = 2;    // kty = EC2
+        private const int AlgEs256 = -7;   // alg = ES256
+        private const int CrvP256  = 1;    // crv = P-256
+
+        // COSE key parameters for RSA (RFC 8230 §4).
+        private const int KtyRsa    = 3;    // kty = RSA
+        private const int AlgRs256  = -257; // alg = RS256
+        private const int NLabel    = -1;   // RSA modulus
+        private const int ELabel    = -2;   // RSA exponent
 
         /// <summary>
         /// Encodes an EC P-256 public key as a CTAP2-canonical COSE_Key CBOR map.
@@ -38,6 +44,28 @@ namespace KeePassKeyWin.Core.Cbor
                 (EncodeNeg(CrvLabel),      EncodeUint(CrvP256)),
                 (EncodeNeg(XLabel),        EncodeBytes(x)),
                 (EncodeNeg(YLabel),        EncodeBytes(y)),
+            });
+            return w.Encode();
+        }
+
+        /// <summary>
+        /// Encodes an RSA-2048 public key as a CTAP2-canonical COSE_Key CBOR map (RFC 8230 §4).
+        /// Map keys sorted bytewise-lex: kty(1)=0x01, alg(3)=0x03, n(-1)=0x20, e(-2)=0x21.
+        /// </summary>
+        /// <param name="n">Big-endian RSA modulus bytes (256 bytes for 2048-bit).</param>
+        /// <param name="e">Big-endian RSA public exponent bytes (3 bytes for e=65537).</param>
+        public static byte[] EncodeRsa(byte[] n, byte[] e)
+        {
+            if (n == null || n.Length == 0) throw new ArgumentException("n must not be empty.", nameof(n));
+            if (e == null || e.Length == 0) throw new ArgumentException("e must not be empty.", nameof(e));
+
+            var w = new CborWriter();
+            w.WriteMap(new[]
+            {
+                (EncodeUint(KtyLabel),  EncodeUint(KtyRsa)),
+                (EncodeUint(AlgLabel),  EncodeNeg(AlgRs256)),
+                (EncodeNeg(NLabel),     EncodeBytes(n)),
+                (EncodeNeg(ELabel),     EncodeBytes(e)),
             });
             return w.Encode();
         }
