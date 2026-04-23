@@ -548,6 +548,35 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             Assert.Equal(0, authData[32] & 0x40);
         }
 
+        /// <summary>
+        /// Populates the store with a fresh RSA-2048 credential and returns the raw
+        /// credentialId bytes plus the record (including PKCS#8 private key).
+        /// </summary>
+        private static (byte[] rawCredId, PasskeyRecord record) SeedRs256Credential(
+            IPasskeyStore store, string rpId = "example.com")
+        {
+            var (pkcs8, n, e) = KeePassKeyWin.Core.Crypto.RsaSigner.GenerateKeyPair();
+            var rawCredId = new byte[32];
+            new Random(7331).NextBytes(rawCredId);
+            var credentialId = Base64Url.Encode(rawCredId);
+            var rsaCoseKey = KeePassKeyWin.Core.Cbor.CoseKey.EncodeRsa(n, e);
+            var record = new PasskeyRecord
+            {
+                CredentialId    = credentialId,
+                RpId            = rpId,
+                RpName          = rpId,
+                UserHandle      = Base64Url.Encode(new byte[] { 0x04, 0x05, 0x06 }),
+                UserName        = "bob",
+                UserDisplayName = "Bob",
+                AlgId           = -257,
+                PrivateKeyPkcs8 = Convert.ToBase64String(pkcs8),
+                PublicKeyCose   = rsaCoseKey,
+                SignCount       = 0,
+            };
+            store.Add(record);
+            return (rawCredId, record);
+        }
+
         // ── Round-trip: register then sign → ECDSA verify ────────────────────
 
         [Fact]
@@ -609,6 +638,62 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             bool ok = pubKey.VerifyData(signInput, signature,
                 HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
             Assert.True(ok, "ECDSA signature over authData || clientDataHash must verify with the MakeCredential-returned public key.");
+        }
+
+        [Fact]
+        public void Rs256Credential_GetAssertion_RoundTripSignatureVerifies()
+        {
+            // Seed a pre-generated RS256 credential (AlgId=-257) directly into the store,
+            // bypassing makeCredentialRaw. This exercises the full HandleGetAssertionRaw
+            // dispatch path for RS256 — specifically that SignWithAlgorithm routes to
+            // RsaSigner.Sign rather than EcdsaSigner.Sign.
+            var handler = MakeHandler(out var store);
+            var rpId = "example.com";
+
+            var (rawCredId, record) = SeedRs256Credential(store, rpId);
+
+            var clientDataHash = SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes("{\"type\":\"webauthn.get\",\"alg\":\"RS256\"}"));
+            var gaReq = BuildGetAssertionCbor(rpId,
+                clientDataHash: clientDataHash,
+                allowListCredIds: new[] { rawCredId });
+
+            var gaResult = CallGetAssertionRaw(handler, gaReq, uv: true);
+
+            var gaResponseBytes = Convert.FromBase64String(gaResult["cbor"]!.Value<string>()!);
+            var (respCredId, authData, signature) = DecodeAssertionResponse(gaResponseBytes);
+
+            // Response must identify the right credential.
+            Assert.Equal(rawCredId, respCredId);
+
+            // authData is 37 bytes (assertion, no AT flag).
+            Assert.Equal(37, authData.Length);
+
+            // rpIdHash at [0..32].
+            var expectedRpIdHash = SHA256.Create().ComputeHash(System.Text.Encoding.UTF8.GetBytes(rpId));
+            Assert.Equal(expectedRpIdHash, authData[..32]);
+
+            // UP+UV flags set, AT not set.
+            byte flags = authData[32];
+            Assert.True((flags & 0x01) != 0, "UP must be set");
+            Assert.True((flags & 0x04) != 0, "UV must be set when uv=true");
+            Assert.True((flags & 0x40) == 0, "AT must NOT be set for assertion authData");
+
+            // signCount incremented to 1.
+            var signCountBe = (uint)((authData[33] << 24) | (authData[34] << 16) | (authData[35] << 8) | authData[36]);
+            Assert.Equal(1u, signCountBe);
+
+            // RS256 signature is exactly 256 bytes (2048-bit modulus).
+            Assert.Equal(256, signature.Length);
+
+            // Verify RSA-PKCS1-v1_5 signature over authData || clientDataHash.
+            var coseKeyBytes = record.PublicKeyCose!;
+            var (parsedN, parsedE) = DecodeCoseKeyNE(coseKeyBytes);
+
+            using var rsa = RSA.Create();
+            rsa.ImportParameters(new RSAParameters { Modulus = parsedN, Exponent = parsedE });
+            var signInput = Concat(authData, clientDataHash);
+            bool ok = rsa.VerifyData(signInput, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            Assert.True(ok, "RS256 signature over authData || clientDataHash must verify with the stored public key.");
         }
 
         // ── Response-shape hex test (Phase 3 landmine canary) ────────────────
@@ -841,6 +926,30 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             var cose = new byte[coseLen];
             Array.Copy(authData, coseStart, cose, 0, coseLen);
             return cose;
+        }
+
+        /// <summary>
+        /// Extracts the RSA modulus (n, COSE key -1) and exponent (e, COSE key -2)
+        /// from an RS256 COSE_Key CBOR blob (RFC 8230 §4).
+        /// </summary>
+        private static (byte[] n, byte[] e) DecodeCoseKeyNE(byte[] coseKey)
+        {
+            var reader = new CborReader(coseKey);
+            int count = reader.ReadMapHeader();
+            byte[]? n = null, e = null;
+            for (int i = 0; i < count; i++)
+            {
+                int peek = reader.PeekMajorType();
+                long key;
+                if (peek == 0) { key = (long)reader.ReadUnsignedInt(); reader.SkipValue(); continue; }
+                else           key = reader.ReadNegativeInt();
+
+                if (key == -1)      n = reader.ReadByteString();
+                else if (key == -2) e = reader.ReadByteString();
+                else                reader.SkipValue();
+            }
+            Assert.NotNull(n); Assert.NotNull(e);
+            return (n!, e!);
         }
 
         /// <summary>Extracts the 32-byte X and Y coordinates from a COSE_Key CBOR blob.</summary>
