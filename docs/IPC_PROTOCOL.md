@@ -117,7 +117,9 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   "params": {
     "cbor": "<base64-std of the CTAP2 input bytes (== pbEncodedRequest)>",
     "uv": true,
-    "pbRequestSignatureB64": "<base64-std of the IEEE-P1363 ECDSA-P256 signature>"
+    "pbRequestSignatureB64": "<base64-std of the IEEE-P1363 ECDSA-P256 signature>",
+    "uvSignatureB64": "<base64-std of the opaque PerformUserVerification(2) response>",
+    "uvBindingTier": "v2_experimental"
   }
 }
 ```
@@ -126,7 +128,8 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
 - `cbor` — required. Base64-std of the raw `pbEncodedRequest` bytes (the CTAP2
   authenticatorMakeCredential / authenticatorGetAssertion input map). The plugin
   hashes these bytes with SHA-256 to recover the message digest covered by
-  `pbRequestSignature`.
+  `pbRequestSignature`, and in Phase 5.UV.4 re-derives `SHA-256(cbor)` as the
+  `buffer_to_sign` used by the v2 UV entrypoint.
 - `uv` — required. Boolean reflecting the result of the Windows Hello UV prompt
   the sidecar performed before forwarding. Currently trusted as-is by the plugin
   (Phase 5.UV.4 will re-verify the UV signature plugin-side).
@@ -143,7 +146,31 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   Setting `KEEPASSKEYWIN_SKIP_PLUGIN_SIG_VERIFY=1` (or `true` / `yes`) on the
   plugin process bypasses the gate entirely — for development only.
 
-**Belt-and-braces**: the sidecar still verifies the same signature server-side
+- `uvSignatureB64` — **optional in Phase 5.UV.3** (present on 5.UV.3+ sidecars;
+  absent on 5.UV.2-era sidecars). Base64-std of the opaque buffer returned by
+  `WebAuthNPluginPerformUserVerification(2)`. The sidecar passes
+  `SHA-256(pbEncodedRequest)` as `pb_buffer_to_sign` to the v2 entrypoint; the
+  Windows runtime signs that digest and returns the result here. The plugin logs
+  this field in 5.UV.3 and verifies it against `OpSignPubKeyCache.Current` in
+  5.UV.4. Absent fields are tolerated without error (pre-5.UV.3 sidecar
+  interoperability).
+
+- `uvBindingTier` — **optional in Phase 5.UV.3**. String enum indicating which
+  Windows entrypoint the sidecar resolved for the UV call:
+  - `"v2_stable"` — `WebAuthNPluginPerformUserVerification2` resolved (stable
+    name; may not exist yet on 24H2 — coded for future stabilisation).
+  - `"v2_experimental"` — `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2`
+    resolved. This is the tier that resolves on Windows 11 24H2 build 26100.6725+
+    (KB5068861) at time of writing.
+  - `"v1"` — only `WebAuthNPluginPerformUserVerification` resolved (v1 fallback).
+    The UV response signature is returned but was NOT produced using the
+    `buffer_to_sign` handshake — plugin-side UV-sig verification is not possible
+    and 5.UV.4 will show a fallback-warning dialog once per plugin process.
+
+  Absent when the sidecar predates 5.UV.3. Plugin must treat absent as equivalent
+  to `"v1"` for forward-compat.
+
+**Belt-and-braces**: the sidecar still verifies `pbRequestSignature` server-side
 (`com::request_sig::verify_request_signature`) through Phase 5.UV.2. The
 sidecar-side gate is removed in Phase 5.UV.5 once the plugin-side gate is the
 sole source of truth.
