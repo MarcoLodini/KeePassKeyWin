@@ -71,17 +71,33 @@ Methods (sidecar → plugin):
 
 Errors are JSON-RPC error envelopes mapped to CTAP2 status codes inside the sidecar.
 
-### Trust boundary (Phase 5.UV.2 onward)
+### Trust boundary (Phase 5.UV.4 onward)
 
-Every `makeCredentialRaw` / `getAssertionRaw` call carries `pbRequestSignatureB64`
-— Windows' op-signing signature over the raw `pbEncodedRequest` bytes — so the
-plugin re-verifies the request itself rather than trusting the sidecar's
-verification. The op-signing public key is delivered to the plugin during the
-hello handshake (`opSignPublicKeyB64`) and cached for the process lifetime in
-`OpSignPubKeyCache`. The sidecar still verifies the same signature server-side
-through 5.UV.2 as belt-and-braces; the sidecar gate is removed in 5.UV.5 once
-the plugin gate is the sole verifier. See `IPC_PROTOCOL.md` for the field
-schema. A dedicated trust-model section lands in 5.UV.6.
+Two plugin-side verification gates protect every `makeCredentialRaw` / `getAssertionRaw` call:
+
+**Gate 1 — `pbRequestSignature` (Phase 5.UV.2+):** Every dispatch carries
+`pbRequestSignatureB64` — Windows' op-signing ECDSA-P256 signature over
+`SHA-256(pbEncodedRequest)`. The plugin verifies this against `OpSignPubKeyCache.Current`
+(populated from the hello handshake's `opSignPublicKeyB64`). The sidecar still verifies
+the same signature server-side as belt-and-braces through 5.UV.2; the sidecar gate is
+removed in 5.UV.5 once the plugin gate is the sole verifier.
+
+**Gate 2 — UV response signature (Phase 5.UV.4+):** Every dispatch also carries
+`uvSignatureB64` (the UV response signature) and `uvBindingTier` (which Windows UV
+entrypoint resolved). For v2-tier dispatches (`"v2_stable"` / `"v2_experimental"`),
+the plugin verifies `uvSignatureB64` against `OpSignPubKeyCache.Current` using
+`EcdsaVerifier.VerifyAcceptingEitherFormat` (accepts both IEEE P1363 and DER formats
+for robustness against Windows API format drift). For v1-tier dispatches, plugin-side
+cryptographic verification is not possible (v1 UV signature covers no caller-supplied
+buffer); the plugin shows a once-per-process Yes/No confirmation dialog and caches
+the user's decision for the plugin-process lifetime.
+
+`opSignPublicKeyB64` is **required** in the hello handshake since 5.UV.4. Absence or
+malformed base64 rejects the hello with `-32602 InvalidParams`; the sidecar returns
+`Err` from `handshake()` before sending the hello if the key-fetch fails.
+
+See `IPC_PROTOCOL.md` for the full field schema. A dedicated trust-model section
+lands in 5.UV.6.
 
 ## Storage schema
 
