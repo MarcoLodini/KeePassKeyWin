@@ -165,21 +165,24 @@ impl PipeClient {
         }
     }
 
-    /// Send `keepasskeywin.hello` with the given package family name and nonce.
+    /// Send `keepasskeywin.hello` with the given package family name, nonce,
+    /// and op-signing public key bytes.
     ///
-    /// Since 5.UV.1, the params also include `opSignPublicKeyB64`: the
-    /// base64-std-encoded `BCRYPT_PUBLIC_KEY_BLOB` bytes of the Windows
-    /// op-signing public key. The plugin caches them for later use in
-    /// plugin-side signature verification (5.UV.2 / 5.UV.4).
-    /// If the key-fetch fails, the field is omitted and a warning is logged;
-    /// the plugin treats the field as optional for backward-compat in 5.UV.1.
+    /// Since 5.UV.4, `opSignPublicKeyB64` is **required** by the plugin —
+    /// without it, UV signature verification cannot run and the plugin rejects
+    /// the hello. If `pub_key_bytes` is `None` (key-fetch failed), we return
+    /// `Err` here rather than letting the plugin reject a malformed hello later.
+    ///
+    /// In production, callers pass `get_op_sign_pub_key_bytes_for_hello()`.
+    /// Tests may inject `None` to exercise this error path without needing
+    /// a real Windows CNG key store.
     pub async fn handshake(
         &mut self,
         client_pkg_family: &str,
         nonce: &str,
+        pub_key_bytes: Option<Vec<u8>>,
     ) -> Result<(), ClientError> {
         use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-        use crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello;
 
         #[derive(Serialize)]
         struct HelloParams<'a> {
@@ -188,13 +191,18 @@ impl PipeClient {
             #[serde(rename = "handshakeNonce")]
             handshake_nonce: &'a str,
             /// Op-signing public key bytes (BCRYPT_PUBLIC_KEY_BLOB), base64-std encoded.
-            /// Optional: absent when the key-fetch fails (pre-5.UV.1 compat for the plugin).
-            #[serde(rename = "opSignPublicKeyB64", skip_serializing_if = "Option::is_none")]
-            op_sign_public_key_b64: Option<String>,
+            /// Required since 5.UV.4 — plugin rejects hello without this field.
+            #[serde(rename = "opSignPublicKeyB64")]
+            op_sign_public_key_b64: String,
         }
 
-        let op_sign_public_key_b64 = get_op_sign_pub_key_bytes_for_hello()
-            .map(|bytes| BASE64_STANDARD.encode(&bytes));
+        let key_bytes = pub_key_bytes.ok_or_else(|| {
+            ClientError::InvalidRequest(
+                "op-sign public key unavailable — cannot complete handshake without it".to_string()
+            )
+        })?;
+
+        let op_sign_public_key_b64 = BASE64_STANDARD.encode(&key_bytes);
 
         let _: serde_json::Value = self
             .call(
@@ -309,6 +317,41 @@ mod tests {
         assert!(json.contains("\"x\":42"));
     }
 
+    /// 5.UV.4: handshake() returns Err(InvalidRequest) when pub_key_bytes is None.
+    /// The error fires before any network I/O, so no server is needed.
+    #[tokio::test]
+    async fn handshake_none_pubkey_returns_err() {
+        use tokio::io::duplex;
+        use tokio::io::{split, AsyncWriteExt};
+
+        // Create a dummy pipe so PipeClient can be constructed, but we never
+        // actually read from it — the error fires before the hello is sent.
+        let (client_io, mut server_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let transport = Transport {
+            reader: tokio::io::BufReader::new(Box::new(read_half)),
+            writer: Box::new(write_half),
+        };
+        let mut client = PipeClient { transport, next_id: 1 };
+
+        // Spawn a task to drain server side so the client doesn't block on writes.
+        tokio::spawn(async move {
+            let _ = server_io.shutdown().await;
+        });
+
+        let result = client
+            .handshake("KeePassKeyWin.Provider_4fv17arhjxxvg", "test-nonce", None)
+            .await;
+
+        assert!(result.is_err(), "expected Err when pub_key_bytes is None");
+        match result.unwrap_err() {
+            ClientError::InvalidRequest(msg) => {
+                assert!(msg.contains("op-sign public key"), "unexpected message: {msg}");
+            }
+            other => panic!("expected ClientError::InvalidRequest, got {other:?}"),
+        }
+    }
+
     #[test]
     fn rpc_response_ok_deserializes() {
         let json = r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#;
@@ -373,8 +416,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let mut client = PipeClient::connect(session_id).await.unwrap();
+        // In this test the server echoes any hello response as "ok", so the
+        // pub_key_bytes content does not matter — use a dummy 72-byte blob.
+        let dummy_key = Some(vec![0u8; 72]);
         client
-            .handshake("KeePassKeyWin.Provider_4fv17arhjxxvg", "deadbeef")
+            .handshake("KeePassKeyWin.Provider_4fv17arhjxxvg", "deadbeef", dummy_key)
             .await
             .unwrap();
 

@@ -16,11 +16,11 @@ namespace KeePassKeyWin.Core.Ipc
     ///   HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce
     /// Written by the plugin at startup, read by the sidecar, consumed (deleted) here.
     ///
-    /// Since Phase 5.UV.1, the hello params may optionally include
+    /// Since Phase 5.UV.4, the hello params <b>must</b> include
     /// <c>opSignPublicKeyB64</c> (base64-std-encoded <c>BCRYPT_PUBLIC_KEY_BLOB</c> bytes).
-    /// If present, the bytes are decoded and cached in <see cref="OpSignPubKeyCache"/>.
-    /// Absence is tolerated for backward compatibility with sidecars that predate 5.UV.1;
-    /// Phase 5.UV.4 will tighten this once UV verification depends on the cached key.
+    /// Absence or malformed base64 throws <see cref="RpcException"/> with
+    /// <see cref="RpcErrorCode.InvalidParams"/>. The bytes are decoded and cached
+    /// in <see cref="OpSignPubKeyCache"/> for UV signature verification.
     /// </summary>
     public static class HandshakeHandler
     {
@@ -51,28 +51,24 @@ namespace KeePassKeyWin.Core.Ipc
             context.HandshakeComplete = true;
             context.ClientPkgFamily = clientPkg!;
 
-            // 5.UV.1: cache the op-signing pubkey if the sidecar sent it.
-            // Absence is tolerated (backward-compat with pre-5.UV.1 sidecars).
-            // 5.UV.4 will tighten this once UV verification depends on the cached key.
+            // 5.UV.4: opSignPublicKeyB64 is now required — absence or malformed
+            // base64 means the sidecar cannot provide UV signature verification,
+            // so the handshake itself is rejected (fail-closed, not deferred).
             var opSignKeyB64 = obj["opSignPublicKeyB64"]?.Value<string>();
-            if (!string.IsNullOrEmpty(opSignKeyB64))
+            if (string.IsNullOrEmpty(opSignKeyB64))
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    "opSignPublicKeyB64 is required in keepasskeywin.hello params.");
+
+            try
             {
-                try
-                {
-                    var keyBytes = Convert.FromBase64String(opSignKeyB64!);
-                    OpSignPubKeyCache.Set(keyBytes);
-                    Debug.WriteLine($"[handshake] op-sign pubkey cached ({keyBytes.Length}B)");
-                }
-                catch (FormatException ex)
-                {
-                    // Malformed base64: log and continue. The handshake itself is still valid;
-                    // UV verification will simply fail later when the cache is empty.
-                    Debug.WriteLine($"[handshake] opSignPublicKeyB64 is not valid base64 — ignored: {ex.Message}");
-                }
+                var keyBytes = Convert.FromBase64String(opSignKeyB64!);
+                OpSignPubKeyCache.Set(keyBytes);
+                Debug.WriteLine($"[handshake] op-sign pubkey cached ({keyBytes.Length}B)");
             }
-            else
+            catch (FormatException ex)
             {
-                Debug.WriteLine("[handshake] opSignPublicKeyB64 absent — op-sign pubkey not cached (pre-5.UV.1 sidecar or key-fetch failed)");
+                throw new RpcException(RpcErrorCode.InvalidParams,
+                    $"opSignPublicKeyB64 is not valid base64: {ex.Message}");
             }
 
             return JValue.CreateString("ok");

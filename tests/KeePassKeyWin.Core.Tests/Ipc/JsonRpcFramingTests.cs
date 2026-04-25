@@ -6,10 +6,12 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using KeePassKeyWin.Core.Ipc;
+using KeePassKeyWin.Core.Tests.Crypto;
 using Xunit;
 
 namespace KeePassKeyWin.Core.Tests.Ipc
 {
+    [Collection("OpSignPubKeyCache")]
     public sealed class JsonRpcFramingTests
     {
         [Fact]
@@ -19,10 +21,12 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             store.Add("nonce1");
             var ctx = new ConnectionContext();
 
+            // 5.UV.4: opSignPublicKeyB64 is now required.
             var @params = new JObject
             {
                 ["clientPkgFamilyName"] = HandshakeHandler.ExpectedPkgFamily,
-                ["handshakeNonce"] = "nonce1"
+                ["handshakeNonce"]      = "nonce1",
+                ["opSignPublicKeyB64"]  = Convert.ToBase64String(OpSignTestKeys.PublicKeyBlob),
             };
 
             var result = HandshakeHandler.Handle(@params, ctx, store);
@@ -83,6 +87,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             };
             using var reader = new StreamReader(client, Encoding.UTF8, false, 4096, leaveOpen: true);
 
+            // 5.UV.4: opSignPublicKeyB64 is now required in hello.
             var req = new
             {
                 jsonrpc = "2.0",
@@ -91,7 +96,8 @@ namespace KeePassKeyWin.Core.Tests.Ipc
                 @params = new
                 {
                     clientPkgFamilyName = HandshakeHandler.ExpectedPkgFamily,
-                    handshakeNonce = nonce
+                    handshakeNonce      = nonce,
+                    opSignPublicKeyB64  = Convert.ToBase64String(OpSignTestKeys.PublicKeyBlob),
                 }
             };
             await writer.WriteLineAsync(JsonConvert.SerializeObject(req));

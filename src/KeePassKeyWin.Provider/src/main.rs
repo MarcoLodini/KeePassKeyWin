@@ -147,7 +147,8 @@ async fn cmd_smoke(args: &[String]) -> Result<(), String> {
     let mut client = PipeClient::connect(session_id).await
         .map_err(|e| format!("connect failed: {e}"))?;
     eprintln!("[smoke] Connected. Performing handshake...");
-    client.handshake(PKG_FAMILY, &nonce).await
+    let pub_key = keepasskeywin_provider::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
+    client.handshake(PKG_FAMILY, &nonce, pub_key).await
         .map_err(|e| format!("handshake failed: {e}"))?;
     eprintln!("[smoke] Handshake OK. Plugin is live.");
     Ok(())
@@ -161,7 +162,8 @@ async fn cmd_make_credential(args: &[String]) -> Result<(), String> {
     eprintln!("[make-credential] Connecting to pipe KeePassKeyWin.{session_id}...");
     let mut client = PipeClient::connect(session_id).await
         .map_err(|e| format!("connect failed: {e}"))?;
-    client.handshake(PKG_FAMILY, &nonce).await
+    let pub_key = keepasskeywin_provider::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
+    client.handshake(PKG_FAMILY, &nonce, pub_key).await
         .map_err(|e| format!("handshake failed: {e}"))?;
     eprintln!("[make-credential] Handshake OK.");
 

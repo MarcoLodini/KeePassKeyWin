@@ -200,7 +200,11 @@ pub(crate) mod imp {
                             return None;
                         }
                     };
-                    match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce).await {
+                    // 5.UV.4: opSignPublicKeyB64 is now required by the plugin.
+                    // Fetch the key bytes before sending hello; if unavailable,
+                    // handshake() returns Err and the activation fails gracefully.
+                    let pub_key = crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
+                    match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce, pub_key).await {
                         Ok(())  => { dbg_step!("handshake OK"); Some(p) }
                         Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
                     }

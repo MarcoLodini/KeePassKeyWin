@@ -435,7 +435,7 @@ fn verify_with_ncrypt(
 /// fetched now successfully). Returns `None` on any error — the caller should
 /// log a `warn!` and send hello without the field for backward-compat
 /// (the plugin treats the field as optional in 5.UV.1).
-pub(crate) fn get_op_sign_pub_key_bytes_for_hello() -> Option<Vec<u8>> {
+pub fn get_op_sign_pub_key_bytes_for_hello() -> Option<Vec<u8>> {
     match get_signing_key_bytes() {
         Ok(bytes) => Some(bytes.clone()),
         Err(hr) => {
