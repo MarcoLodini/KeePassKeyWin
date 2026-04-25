@@ -175,6 +175,15 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
 
   Absent field treated as `"v1"` for pre-5.UV.3 sidecar interoperability.
 
+  **Debug override**: setting `KEEPASSKEYWIN_FORCE_UV_V1=1` (or `true` / `yes`) on
+  the *sidecar* process at activation time skips the v2 lookup entirely and
+  resolves to `WebAuthNPluginPerformUserVerification` (v1) for every dispatch.
+  Lets the plugin's v1 confirmation dialog be exercised end-to-end on Windows
+  builds where `_2` would otherwise resolve. Read once per process at first
+  bindings init; per-op COM activation re-reads on each fresh sidecar process.
+  Honoured on all platforms (the env var lookup is cross-platform; the
+  Windows-only effect is on the `LoadLibraryW` symbol that resolves).
+
 **Belt-and-braces**: the sidecar still verifies `pbRequestSignature` server-side
 (`com::request_sig::verify_request_signature`) through Phase 5.UV.2. The
 sidecar-side gate is removed in Phase 5.UV.5 once the plugin-side gate is the

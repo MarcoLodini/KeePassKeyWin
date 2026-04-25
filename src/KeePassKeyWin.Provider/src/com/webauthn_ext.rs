@@ -30,6 +30,15 @@
 //!
 //! Which tier resolved is returned alongside every UV call result so the IPC
 //! layer can forward it to the plugin (for the 5.UV.4 fallback-warning dialog).
+//!
+//! ## Debug override: `KEEPASSKEYWIN_FORCE_UV_V1=1`
+//!
+//! The triple-fallback lookup makes the v1 path unreachable on any Windows
+//! build that exports a `_2` symbol — i.e. every machine on 24H2 26100.6725+.
+//! For acceptance-testing the plugin's v1-fallback dialog (5.UV.4) on a real
+//! machine, set `KEEPASSKEYWIN_FORCE_UV_V1=1` before activating the sidecar:
+//! the v2 lookup is skipped and `WebAuthNPluginPerformUserVerification` (v1)
+//! resolves for every dispatch. See `com::uv_override` for the helper.
 
 #![cfg(windows)]
 
@@ -212,8 +221,17 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
 
         // v2 PerformUV — optional; triple-fallback in tier order.
         // try_get_proc returns None without error when no name resolves.
+        // Debug override: KEEPASSKEYWIN_FORCE_UV_V1=1 short-circuits to v1
+        // so 5.UV.4's fallback-dialog branch can be exercised on builds where
+        // _2 would otherwise resolve.
         let (perform_uv_v2_raw, perform_uv_tier, uv2_name): (Option<_>, UvTier, &'static str) =
-            if let Some(p) = try_get_proc(hmod, b"WebAuthNPluginPerformUserVerification2\0") {
+            if crate::com::uv_override::force_v1_enabled() {
+                tracing::warn!(
+                    "[uv] KEEPASSKEYWIN_FORCE_UV_V1=1 — skipping v2 lookup; \
+                     using v1 (WebAuthNPluginPerformUserVerification) for all dispatches"
+                );
+                (None, UvTier::V1, "WebAuthNPluginPerformUserVerification")
+            } else if let Some(p) = try_get_proc(hmod, b"WebAuthNPluginPerformUserVerification2\0") {
                 (Some(p), UvTier::V2Stable, "WebAuthNPluginPerformUserVerification2")
             } else if let Some(p) = try_get_proc(hmod, b"EXPERIMENTAL_WebAuthNPluginPerformUserVerification2\0") {
                 (Some(p), UvTier::V2Experimental, "EXPERIMENTAL_WebAuthNPluginPerformUserVerification2")

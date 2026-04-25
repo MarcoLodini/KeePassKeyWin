@@ -36,6 +36,9 @@ pub mod com {
     // The module itself is cross-platform (tests run on Linux); Windows-only
     // code is gated internally with #[cfg(windows)].
     pub mod request_sig;
+    // Debug-only override for the PerformUserVerification binding lookup.
+    // Cross-platform (tests run on Linux). Read by webauthn_ext::bindings().
+    pub mod uv_override;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;

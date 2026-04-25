@@ -198,6 +198,54 @@ dotnet run --project src/KeePassKeyWin.Harness -c Release -- `
    - In KeePass, select the entry in the Passkeys group and press Delete.
    - Run `list webauthn.io` in a new harness session to confirm empty.
 
+### Step 6b — Exercise the v1-fallback dialog (Phase 5.UV.4 acceptance)
+
+By default on Windows 11 24H2 26100.6725+ the sidecar resolves
+`EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` and every UV op runs the
+v2 path with no dialog. To validate the plugin's v1 confirmation dialog
+(`UV signature verification is unavailable on this Windows build. Proceed?`),
+flip the sidecar's PerformUV lookup to v1 with the debug env var:
+
+```powershell
+# User scope — try first; log out and back in so all child processes see it.
+setx KEEPASSKEYWIN_FORCE_UV_V1 1
+
+# If the dialog still doesn't appear (user env may not propagate to the
+# WebAuthN service activation context), escalate to machine scope:
+# (elevated PowerShell)
+setx /M KEEPASSKEYWIN_FORCE_UV_V1 1
+```
+
+The sidecar reads the var once at first-bindings init and emits a
+`tracing::warn!` line (visible in DebugView or the configured log sink):
+
+```
+[uv] KEEPASSKEYWIN_FORCE_UV_V1=1 — skipping v2 lookup; using v1 ...
+```
+
+Acceptance flow with the override active:
+
+1. Repeat Step 6 register / authenticate flow (any RP — webauthn.io is fine).
+2. **First UV op of the KeePass session**: a Yes/No `MessageBox` should appear
+   asking *"UV signature verification is unavailable on this Windows build.
+   Proceed with this passkey operation?"*
+3. **Yes** → the op succeeds and webauthn.io completes register/authenticate.
+4. **No** → the op is rejected (`-32602 InvalidParams`, `user declined v1-fallback UV`)
+   and webauthn.io reports the error.
+5. **Subsequent UV ops in the same KeePass session** must NOT re-prompt — the
+   decision is cached for the plugin-process lifetime. Restart KeePass to
+   re-arm the prompt.
+
+Clear the override when done:
+
+```powershell
+setx KEEPASSKEYWIN_FORCE_UV_V1 ""        # user scope
+setx /M KEEPASSKEYWIN_FORCE_UV_V1 ""     # machine scope (elevated)
+```
+
+Per-op COM activation re-reads the env at every fresh sidecar process, so
+`setx` between dispatches is enough — no need to restart Windows.
+
 ---
 
 ## Step 7 — Verify teardown
