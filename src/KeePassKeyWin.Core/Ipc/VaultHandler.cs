@@ -945,7 +945,22 @@ namespace KeePassKeyWin.Core.Ipc
                     throw new RpcException(RpcErrorCode.InvalidParams,
                         $"{method}: UV fallback prompt not configured.");
 
-                if (!_uvFallbackPrompt.ShouldProceed())
+                bool proceed;
+                try
+                {
+                    proceed = _uvFallbackPrompt.ShouldProceed();
+                }
+                catch (RpcException) { throw; }
+                catch (Exception)
+                {
+                    // The prompt closure threw (e.g. MainWindow disposed mid-Invoke).
+                    // Fail-closed for THIS request, but UvFallbackPrompt does not
+                    // latch on exceptions — the next op gets a fresh chance to ask.
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV fallback prompt unavailable.");
+                }
+
+                if (!proceed)
                     throw new RpcException(RpcErrorCode.InvalidParams,
                         $"{method}: user declined v1-fallback UV.");
 

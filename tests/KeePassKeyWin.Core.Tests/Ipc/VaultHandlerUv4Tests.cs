@@ -789,5 +789,70 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             Assert.Contains("UV signature verification failed", ex.Message);
             Assert.Equal(0, promptCalls);
         }
+
+        // ── Case 18: prompt closure throws → fail-closed for THIS request,
+        //            but UvFallbackPrompt does not latch — next op re-asks.
+        //            Pins the no-sticky-deny invariant against future regressions
+        //            of the plugin closure's exception-handling.
+
+        [Theory]
+        [InlineData("keepasskeywin.makeCredentialRaw")]
+        [InlineData("keepasskeywin.getAssertionRaw")]
+        public void Case18_V1_PromptThrows_FailsClosedNoLatch(string method)
+        {
+            OpSignTestKeys.EnsureCachePopulated();
+            int promptCalls = 0;
+            var prompt = new UvFallbackPrompt(() =>
+            {
+                promptCalls++;
+                throw new InvalidOperationException("simulated MainWindow disposal race");
+            });
+
+            VaultHandler handler;
+            Func<JObject> buildParams;
+            if (method == "keepasskeywin.makeCredentialRaw")
+            {
+                handler = new VaultHandler(new InMemoryPasskeyStore(), prompt);
+                buildParams = () =>
+                {
+                    var cborBytes = MakeCredentialRawTests.MinimalMakeCredentialCbor();
+                    return MakeCredParams(cborBytes, "v1", includeSigField: false);
+                };
+            }
+            else
+            {
+                var store = new InMemoryPasskeyStore();
+                handler = new VaultHandler(store, prompt);
+                // Seed a credential under v2_stable (prompt not invoked).
+                var credCbor = MakeCredentialRawTests.MinimalMakeCredentialCbor();
+                var seed = handler.Handle("keepasskeywin.makeCredentialRaw",
+                    MakeCredParams(credCbor, "v2_stable"))!;
+                var credIdRaw = Base64Url.Decode(seed["credentialIdB64Url"]!.Value<string>()!);
+                buildParams = () =>
+                {
+                    var assertCbor = GetAssertionRawTests.BuildGetAssertionCbor(
+                        "example.com", allowListCredIds: new[] { credIdRaw });
+                    return new JObject
+                    {
+                        ["cbor"] = Convert.ToBase64String(assertCbor),
+                        ["uv"]   = true,
+                        ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(assertCbor),
+                        ["uvBindingTier"] = "v1",
+                    };
+                };
+            }
+
+            // First v1 op → prompt throws → request rejected.
+            var ex1 = Assert.Throws<RpcException>(() => handler.Handle(method, buildParams()));
+            Assert.Equal(RpcErrorCode.InvalidParams, ex1.Code);
+            Assert.Contains("UV fallback prompt unavailable", ex1.Message);
+
+            // Second v1 op → prompt invoked AGAIN (no sticky deny), throws again.
+            var ex2 = Assert.Throws<RpcException>(() => handler.Handle(method, buildParams()));
+            Assert.Equal(RpcErrorCode.InvalidParams, ex2.Code);
+            Assert.Contains("UV fallback prompt unavailable", ex2.Message);
+
+            Assert.Equal(2, promptCalls); // critical: latch did NOT set on throw
+        }
     }
 }
