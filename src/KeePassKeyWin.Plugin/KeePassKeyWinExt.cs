@@ -98,7 +98,38 @@ public sealed class KeePassKeyWinExt : KeePass.Plugins.Plugin
         Diag("LastStep", "Initialize:building-dispatcher");
         var dispatcher = new RpcDispatcher(_nonceStore!);
         var vaultStore = new KeePassPasskeyStore(host);
+#if NET48
+        // 5.UV.4: wire the v1 UV-fallback confirmation dialog.
+        // Prompt is cached for the plugin-process lifetime — user is asked
+        // at most once per KeePass session. Default-button-No is intentional.
+        var uvFallbackPrompt = new UvFallbackPrompt(() =>
+        {
+            try
+            {
+                var mw = _host?.MainWindow;
+                if (mw == null || !mw.IsHandleCreated) return false;
+                return (System.Windows.Forms.DialogResult)mw.Invoke(
+                    new Func<System.Windows.Forms.DialogResult>(() =>
+                        System.Windows.Forms.MessageBox.Show(
+                            mw,
+                            "UV signature verification is unavailable on this Windows build.\n\nProceed with this passkey operation?",
+                            "KeePassKeyWin",
+                            System.Windows.Forms.MessageBoxButtons.YesNo,
+                            System.Windows.Forms.MessageBoxIcon.Warning,
+                            System.Windows.Forms.MessageBoxDefaultButton.Button2)))
+                    == System.Windows.Forms.DialogResult.Yes;
+            }
+            catch (Exception)
+            {
+                // Fail-closed if Invoke races with MainWindow disposal during
+                // shutdown or anything else throws while presenting the dialog.
+                return false;
+            }
+        });
+        var vaultHandler = new VaultHandler(vaultStore, uvFallbackPrompt);
+#else
         var vaultHandler = new VaultHandler(vaultStore);
+#endif
         dispatcher.VaultHandler = vaultHandler.Handle;
 
         var sessionId = Process.GetCurrentProcess().SessionId;
