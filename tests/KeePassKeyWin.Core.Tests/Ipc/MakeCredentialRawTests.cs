@@ -135,20 +135,35 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             // the 5.UV.2 gate rejects requests when the cache is empty.
             OpSignTestKeys.EnsureCachePopulated();
             store = new InMemoryPasskeyStore();
-            return new VaultHandler(store);
+            // 5.UV.4: pass a non-null prompt so v1-path calls during sig-gate
+            // tests don't throw "UV fallback prompt not configured".
+            return new VaultHandler(store, new UvFallbackPrompt(() => true));
         }
 
         // Builds the JSON-RPC params object for a raw makeCredential call,
         // including the pbRequestSignatureB64 field signed with the shared test
         // op-sign key. Inline tests that bypass CallMakeCredentialRaw must use
         // this helper too — never construct the params with bare cbor.
-        internal static JObject BuildMakeCredentialRawParams(byte[] cborBytes, bool uv = false)
-            => new JObject
+        //
+        // 5.UV.4: defaults to v2_stable tier + a valid UV sig so existing tests
+        // clear the new UV verification gate. Pass uvBindingTier=null or "v1" to
+        // reach the v1 / fallback path in 5.UV.4-specific tests.
+        internal static JObject BuildMakeCredentialRawParams(
+            byte[] cborBytes, bool uv = false,
+            string? uvBindingTier = "v2_stable",
+            string? uvSignatureB64 = null)
+        {
+            var uvSig = uvSignatureB64 ?? OpSignTestKeys.SignAndBase64(cborBytes);
+            var obj = new JObject
             {
                 ["cbor"] = Convert.ToBase64String(cborBytes),
                 ["uv"]   = uv,
                 ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+                ["uvSignatureB64"] = uvSig,
             };
+            if (uvBindingTier != null) obj["uvBindingTier"] = uvBindingTier;
+            return obj;
+        }
 
         private static JObject CallMakeCredentialRaw(VaultHandler handler, byte[] cborBytes, bool uv = false)
         {

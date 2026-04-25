@@ -25,10 +25,12 @@ namespace KeePassKeyWin.Core.Ipc
     public sealed class VaultHandler
     {
         private readonly IPasskeyStore _store;
+        private readonly UvFallbackPrompt? _uvFallbackPrompt;
 
-        public VaultHandler(IPasskeyStore store)
+        public VaultHandler(IPasskeyStore store, UvFallbackPrompt? uvFallbackPrompt = null)
         {
             _store = store ?? throw new ArgumentNullException(nameof(store));
+            _uvFallbackPrompt = uvFallbackPrompt;
         }
 
         /// <summary>
@@ -121,12 +123,10 @@ namespace KeePassKeyWin.Core.Ipc
             // base64), so callers reuse the returned bytes.
             byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.makeCredentialRaw");
 
-            // 5.UV.3: sidecar now forwards the UV signature bytes + which fallback tier
-            // resolved. Plugin logs these in 5.UV.3 and verifies them in 5.UV.4; absent
-            // fields are tolerated (pre-5.UV.3 sidecar).
-            var uvSigB64 = obj["uvSignatureB64"]?.Value<string>();
-            var uvTier = obj["uvBindingTier"]?.Value<string>();
-            Debug.WriteLine($"[uv-ingest] method=keepasskeywin.makeCredentialRaw tier={uvTier ?? "absent"} sig_len={uvSigB64?.Length ?? 0}");
+            // 5.UV.4: verify the UV response signature (v2 tiers) or prompt the
+            // user for v1-fallback authorisation. See VerifyUvSignatureOrPrompt
+            // for the full branch table.
+            VerifyUvSignatureOrPrompt(obj, cborBytes, "keepasskeywin.makeCredentialRaw");
 
             // Parse the CTAP2 authenticatorMakeCredential input map.
             MakeCredentialRequest req;
@@ -234,12 +234,10 @@ namespace KeePassKeyWin.Core.Ipc
             // base64), so callers reuse the returned bytes.
             byte[] cborBytes = VerifyAndDecodeCbor(obj, "keepasskeywin.getAssertionRaw");
 
-            // 5.UV.3: sidecar now forwards the UV signature bytes + which fallback tier
-            // resolved. Plugin logs these in 5.UV.3 and verifies them in 5.UV.4; absent
-            // fields are tolerated (pre-5.UV.3 sidecar).
-            var uvSigB64 = obj["uvSignatureB64"]?.Value<string>();
-            var uvTier = obj["uvBindingTier"]?.Value<string>();
-            Debug.WriteLine($"[uv-ingest] method=keepasskeywin.getAssertionRaw tier={uvTier ?? "absent"} sig_len={uvSigB64?.Length ?? 0}");
+            // 5.UV.4: verify the UV response signature (v2 tiers) or prompt the
+            // user for v1-fallback authorisation. See VerifyUvSignatureOrPrompt
+            // for the full branch table.
+            VerifyUvSignatureOrPrompt(obj, cborBytes, "keepasskeywin.getAssertionRaw");
 
             GetAssertionRequest req;
             try
@@ -871,6 +869,92 @@ namespace KeePassKeyWin.Core.Ipc
                 });
             }
             return arr;
+        }
+
+        // 5.UV.4: verify the UV response signature or prompt for v1-fallback.
+        //
+        // Branch table (canonical):
+        //
+        //   "v2_stable" | "v2_experimental"
+        //     uvSignatureB64 MUST be present, valid base64, non-empty.
+        //     EcdsaVerifier.VerifyAcceptingEitherFormat(pubkey, cborBytes, sig) MUST be true.
+        //     OpSignPubKeyCache.Current null → throw ("op-sign pubkey not cached").
+        //     Any failure → RpcException(InvalidParams, "<method>: UV signature verification failed.").
+        //
+        //   "v1" | null | "" (absent tier)
+        //     Skip ECDSA verify. Call _uvFallbackPrompt.ShouldProceed().
+        //     null prompt → throw "UV fallback prompt not configured."
+        //     false result → throw "user declined v1-fallback UV."
+        //
+        //   Anything else
+        //     RpcException(InvalidParams, "unknown uvBindingTier '<value>'"). Fail-closed.
+        //
+        // Hashing semantics: the sidecar signs SHA-256(cborBytes) as pbBufferToSign,
+        // and Windows signs the digest directly (NCryptSignHash). EcdsaVerifier.Verify
+        // calls ecdsa.VerifyData(..., SHA256, ...) which hashes internally — so we pass
+        // cborBytes raw (not pre-hashed). Same idiom as the existing pbRequestSignature path.
+        private void VerifyUvSignatureOrPrompt(JObject obj, byte[] cborBytes, string method)
+        {
+            var uvTier   = obj["uvBindingTier"]?.Value<string>();
+            var uvSigB64 = obj["uvSignatureB64"]?.Value<string>();
+
+            if (uvTier == "v2_stable" || uvTier == "v2_experimental")
+            {
+                // Belt-and-braces: cache must be populated (handshake tightening guarantees
+                // this in 5.UV.4, but fail-closed if somehow missing).
+                var pubKey = OpSignPubKeyCache.Current;
+                if (pubKey == null)
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: op-sign pubkey not cached.");
+
+                if (string.IsNullOrEmpty(uvSigB64))
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV signature verification failed.");
+
+                byte[] sigBytes;
+                try
+                {
+                    sigBytes = Convert.FromBase64String(uvSigB64!);
+                }
+                catch (FormatException)
+                {
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV signature verification failed.");
+                }
+
+                if (sigBytes.Length == 0)
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV signature verification failed.");
+
+                bool ok = EcdsaVerifier.VerifyAcceptingEitherFormat(
+                    pubKey.Value.Span, cborBytes, sigBytes);
+
+                if (!ok)
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV signature verification failed.");
+
+                Debug.WriteLine($"[uv-verify] OK method={method} tier={uvTier}");
+                return;
+            }
+
+            if (uvTier == "v1" || string.IsNullOrEmpty(uvTier))
+            {
+                Debug.WriteLine($"[uv-verify] v1 fallback method={method} tier={uvTier ?? "absent"}");
+
+                if (_uvFallbackPrompt == null)
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: UV fallback prompt not configured.");
+
+                if (!_uvFallbackPrompt.ShouldProceed())
+                    throw new RpcException(RpcErrorCode.InvalidParams,
+                        $"{method}: user declined v1-fallback UV.");
+
+                return;
+            }
+
+            // Unknown tier — fail-closed.
+            throw new RpcException(RpcErrorCode.InvalidParams,
+                $"{method}: unknown uvBindingTier '{uvTier}'.");
         }
 
         // 5.UV.2: verify pbRequestSignature plugin-side, then return the

@@ -68,7 +68,7 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         /// and optional bool options (up/uv). Since CborWriter has no bool primitive,
         /// we manually assemble the `options` map when requested.
         /// </summary>
-        private static byte[] BuildGetAssertionCbor(
+        internal static byte[] BuildGetAssertionCbor(
             string rpId,
             byte[]? clientDataHash = null,
             IEnumerable<byte[]>? allowListCredIds = null,
@@ -128,30 +128,56 @@ namespace KeePassKeyWin.Core.Tests.Ipc
             // the 5.UV.2 gate rejects requests when the cache is empty.
             OpSignTestKeys.EnsureCachePopulated();
             store = new InMemoryPasskeyStore();
-            return new VaultHandler(store);
+            // 5.UV.4: pass a non-null prompt so v1-path calls during sig-gate
+            // tests don't throw "UV fallback prompt not configured".
+            return new VaultHandler(store, new UvFallbackPrompt(() => true));
         }
 
         // Builds the JSON-RPC params object for a raw getAssertion call,
         // including the pbRequestSignatureB64 field signed with the shared test
         // op-sign key. Inline tests that bypass CallGetAssertionRaw must use
         // this helper too — never construct the params with bare cbor.
-        internal static JObject BuildGetAssertionRawParams(byte[] cborBytes, bool uv = false)
-            => new JObject
+        //
+        // 5.UV.4: defaults to v2_stable tier + a valid UV sig so existing tests
+        // clear the new UV verification gate. Pass uvBindingTier=null or "v1" to
+        // reach the v1 / fallback path in 5.UV.4-specific tests.
+        internal static JObject BuildGetAssertionRawParams(
+            byte[] cborBytes, bool uv = false,
+            string? uvBindingTier = "v2_stable",
+            string? uvSignatureB64 = null)
+        {
+            var uvSig = uvSignatureB64 ?? OpSignTestKeys.SignAndBase64(cborBytes);
+            var obj = new JObject
             {
                 ["cbor"] = Convert.ToBase64String(cborBytes),
                 ["uv"]   = uv,
                 ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+                ["uvSignatureB64"] = uvSig,
             };
+            if (uvBindingTier != null) obj["uvBindingTier"] = uvBindingTier;
+            return obj;
+        }
 
         // Same shape as BuildGetAssertionRawParams but for the makeCredential
         // method — used by the few cross-method round-trip tests in this file.
-        internal static JObject BuildMakeCredentialRawParams(byte[] cborBytes, bool uv = false)
-            => new JObject
+        //
+        // 5.UV.4: same default-tier logic as BuildGetAssertionRawParams.
+        internal static JObject BuildMakeCredentialRawParams(
+            byte[] cborBytes, bool uv = false,
+            string? uvBindingTier = "v2_stable",
+            string? uvSignatureB64 = null)
+        {
+            var uvSig = uvSignatureB64 ?? OpSignTestKeys.SignAndBase64(cborBytes);
+            var obj = new JObject
             {
                 ["cbor"] = Convert.ToBase64String(cborBytes),
                 ["uv"]   = uv,
                 ["pbRequestSignatureB64"] = OpSignTestKeys.SignAndBase64(cborBytes),
+                ["uvSignatureB64"] = uvSig,
             };
+            if (uvBindingTier != null) obj["uvBindingTier"] = uvBindingTier;
+            return obj;
+        }
 
         /// <summary>
         /// Builds a handler with one credential pre-seeded, ready for a
@@ -160,13 +186,17 @@ namespace KeePassKeyWin.Core.Tests.Ipc
         /// <c>internal</c> for use by <see cref="VaultHandlerUv3Tests"/>.
         /// </summary>
         internal static (VaultHandler handler, JObject assertParams) BuildHandlerWithCredential(
-            string rpId = "example.com")
+            string rpId = "example.com",
+            UvFallbackPrompt? prompt = null)
         {
             OpSignTestKeys.EnsureCachePopulated();
             var store = new InMemoryPasskeyStore();
             var (rawCredId, _) = SeedCredential(store, rpId);
             var cborBytes = BuildGetAssertionCbor(rpId, allowListCredIds: new[] { rawCredId });
-            return (new VaultHandler(store), BuildGetAssertionRawParams(cborBytes, uv: true));
+            // 5.UV.4: pass a non-null prompt so v1-path callers don't throw
+            // "UV fallback prompt not configured". Callers may inject their own.
+            var effectivePrompt = prompt ?? new UvFallbackPrompt(() => true);
+            return (new VaultHandler(store, effectivePrompt), BuildGetAssertionRawParams(cborBytes, uv: true));
         }
 
         /// <summary>
