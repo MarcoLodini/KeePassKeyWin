@@ -36,6 +36,122 @@ namespace KeePassKeyWin.Core.Crypto
         private const int  P256CoordSize = 32;
 
         /// <summary>
+        /// Verify an ECDSA-P256 signature that may be in either IEEE P1363 raw
+        /// format (64-byte <c>r || s</c>) or DER <c>ECDSA-Sig-Value</c> (typically
+        /// 70–72 bytes: <c>SEQUENCE { INTEGER r, INTEGER s }</c>).
+        ///
+        /// <para>
+        /// This is the entry point for UV response verification because the Windows
+        /// <c>NCryptSignHash</c> / plugin UV path does not document which encoding
+        /// <c>pbResponse</c> carries. Trying P1363 first (64-byte fast path) and
+        /// falling back to DER makes the gate robust against format drift without
+        /// widening the strict <c>Verify</c> path used by <c>pbRequestSignature</c>.
+        /// </para>
+        /// </summary>
+        /// <param name="pubKeyBlob">72-byte <c>BCRYPT_ECCKEY_BLOB</c> for P-256.</param>
+        /// <param name="payload">Raw bytes to verify (SHA-256 hashed internally).</param>
+        /// <param name="signature">Signature in either IEEE P1363 or DER format.</param>
+        /// <returns>
+        /// <c>true</c> on a valid signature (in either accepted format); <c>false</c>
+        /// on any verification failure. Does not throw for cryptographic failures.
+        /// </returns>
+        public static bool VerifyAcceptingEitherFormat(
+            ReadOnlySpan<byte> pubKeyBlob,
+            ReadOnlySpan<byte> payload,
+            ReadOnlySpan<byte> signature)
+        {
+            if (pubKeyBlob.IsEmpty || payload.IsEmpty || signature.IsEmpty)
+                return false;
+
+            // Fast path: 64-byte IEEE P1363 (current NCrypt convention).
+            if (signature.Length == 64 && Verify(pubKeyBlob, payload, signature))
+                return true;
+
+            // DER fallback: SEQUENCE { INTEGER r, INTEGER s }
+            // Parse manually — System.Formats.Asn1 is not available on net48,
+            // and this path is exercised defensively so simplicity beats elegance.
+            if (TryDerToP1363(signature, out var p1363Sig))
+                return Verify(pubKeyBlob, payload, p1363Sig);
+
+            return false;
+        }
+
+        /// <summary>
+        /// Converts a DER-encoded <c>ECDSA-Sig-Value</c> to a 64-byte IEEE P1363
+        /// representation (<c>r || s</c>, each 32 bytes, left-zero-padded, high-bit
+        /// padding stripped).
+        /// </summary>
+        internal static bool TryDerToP1363(ReadOnlySpan<byte> der, out byte[] p1363)
+        {
+            p1363 = Array.Empty<byte>();
+
+            // Minimum DER SEQUENCE for two 1-byte integers = 2+2+1+2+1 = 8 bytes.
+            if (der.Length < 8)
+                return false;
+
+            // SEQUENCE tag + length
+            if (der[0] != 0x30)
+                return false;
+
+            int pos = 1;
+            int seqLen = ReadDerLength(der, ref pos);
+            if (seqLen < 0 || pos + seqLen != der.Length)
+                return false;
+
+            // First INTEGER (r)
+            if (pos >= der.Length || der[pos] != 0x02) return false;
+            pos++;
+            int rLen = ReadDerLength(der, ref pos);
+            if (rLen <= 0 || pos + rLen > der.Length) return false;
+            var rBytes = der.Slice(pos, rLen);
+            pos += rLen;
+
+            // Second INTEGER (s)
+            if (pos >= der.Length || der[pos] != 0x02) return false;
+            pos++;
+            int sLen = ReadDerLength(der, ref pos);
+            if (sLen <= 0 || pos + sLen != der.Length) return false;
+            var sBytes = der.Slice(pos, sLen);
+
+            // Convert each integer: strip leading 0x00 padding, then left-pad to 32 bytes.
+            var result = new byte[64];
+            if (!TryFitCoord(rBytes, result, 0))  return false;
+            if (!TryFitCoord(sBytes, result, 32)) return false;
+
+            p1363 = result;
+            return true;
+        }
+
+        private static int ReadDerLength(ReadOnlySpan<byte> data, ref int pos)
+        {
+            if (pos >= data.Length) return -1;
+            byte b = data[pos++];
+            if (b < 0x80) return b;          // short form
+            int numBytes = b & 0x7F;
+            if (numBytes == 0 || numBytes > 2 || pos + numBytes > data.Length) return -1;
+            int len = 0;
+            for (int i = 0; i < numBytes; i++)
+                len = (len << 8) | data[pos++];
+            return len;
+        }
+
+        private static bool TryFitCoord(ReadOnlySpan<byte> coord, byte[] dest, int destOffset)
+        {
+            // Strip DER leading-zero padding.
+            int start = 0;
+            while (start < coord.Length - 1 && coord[start] == 0x00)
+                start++;
+            var trimmed = coord.Slice(start);
+
+            if (trimmed.Length > P256CoordSize) return false; // value too large for P-256
+
+            // Left-pad to exactly 32 bytes (dest is already zero-initialised).
+            int padding = P256CoordSize - trimmed.Length;
+            trimmed.CopyTo(dest.AsSpan(destOffset + padding, trimmed.Length));
+            return true;
+        }
+
+        /// <summary>
         /// Verify an ECDSA-P256 signature over SHA-256(payload) using the given
         /// <c>BCRYPT_PUBLIC_KEY_BLOB</c> pubkey bytes.
         /// </summary>
