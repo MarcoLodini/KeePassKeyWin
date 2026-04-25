@@ -155,7 +155,8 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   dispatches, this field is present but ignored for verification (v1 UV response
   is opaque and cannot be verified against a caller-supplied buffer).
 
-- `uvBindingTier` — **required (Phase 5.UV.3+)**. String enum indicating which
+- `uvBindingTier` — optional (Phase 5.UV.3+); absent / `null` / `""` is treated
+  as `"v1"` for pre-5.UV.3 sidecar interoperability. String enum indicating which
   Windows entrypoint the sidecar resolved for the UV call. The plugin's branch table:
 
   | `uvBindingTier` value           | Plugin action                                                 |
