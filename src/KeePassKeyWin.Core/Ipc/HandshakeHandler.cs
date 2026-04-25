@@ -1,6 +1,6 @@
 using System;
-using System.Diagnostics;
 using KeePassKeyWin.Core.Crypto;
+using KeePassKeyWin.Core.Diagnostics;
 using Newtonsoft.Json.Linq;
 
 namespace KeePassKeyWin.Core.Ipc
@@ -63,7 +63,7 @@ namespace KeePassKeyWin.Core.Ipc
             {
                 var keyBytes = Convert.FromBase64String(opSignKeyB64!);
                 OpSignPubKeyCache.Set(keyBytes);
-                Debug.WriteLine($"[handshake] op-sign pubkey cached ({keyBytes.Length}B)");
+                TraceLogger.WriteLine($"[handshake] op-sign pubkey cached ({keyBytes.Length}B)");
             }
             catch (FormatException ex)
             {

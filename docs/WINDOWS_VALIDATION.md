@@ -246,6 +246,42 @@ setx /M KEEPASSKEYWIN_FORCE_UV_V1 ""     # machine scope (elevated)
 Per-op COM activation re-reads the env at every fresh sidecar process, so
 `setx` between dispatches is enough — no need to restart Windows.
 
+### Step 6c — Diagnostic file logging (Phase 5.UV.4 troubleshooting)
+
+The sidecar is built with `windows_subsystem = "windows"` so during COM
+activation stderr is closed and `tracing` output is silently discarded.
+Likewise the plugin's `Debug.WriteLine` is compiled out of Release builds.
+Two opt-in env vars route both back to a file for live troubleshooting:
+
+```powershell
+# Sidecar (Rust). One file per sidecar process; appended.
+setx /M KEEPASSKEYWIN_LOG_FILE       "C:\KeePassKeyWin\sidecar.log"
+
+# Plugin (C# net48). Single file across the KeePass process lifetime.
+# Same path is fine — both sides open with FileShare.ReadWrite.
+setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN "C:\KeePassKeyWin\plugin.log"
+```
+
+After setting (machine scope is most reliable — see Step 6b on env
+inheritance), sign out and back in, then reproduce. The sidecar log
+captures every `tracing::*` event (binding init, UV tier resolution,
+IPC handshake, sig-verify failures); the plugin log captures every
+`TraceLogger.WriteLine` site (handshake validation, `[uv-ingest]`,
+`[uv-verify]`, `[sig-verify]`).
+
+Useful breadcrumbs to grep for:
+- `[trace] file logging enabled` — confirms the env var was honoured.
+- `[uv] KEEPASSKEYWIN_FORCE_UV_V1=1` — confirms `FORCE_UV_V1` reached the sidecar.
+- `[uv-verify]` — plugin's per-op UV verification result.
+- `[handshake]` — hello frame validation.
+
+Unset both vars when done:
+
+```powershell
+setx /M KEEPASSKEYWIN_LOG_FILE        ""
+setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN ""
+```
+
 ---
 
 ## Step 7 — Verify teardown

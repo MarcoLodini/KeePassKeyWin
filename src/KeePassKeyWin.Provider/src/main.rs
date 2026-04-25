@@ -20,6 +20,7 @@ use keepasskeywin_provider::ctap::{
 };
 
 use std::process;
+use std::sync::Mutex;
 use tracing_subscriber::fmt;
 
 /// Expected package family name for the sidecar — must match the C# constant.
@@ -48,10 +49,43 @@ fn parse_subcommand(s: &str) -> Subcommand {
     }
 }
 
+// ── Tracing init: file route via KEEPASSKEYWIN_LOG_FILE, else default stderr ──
+//
+// Background: this binary is built with `windows_subsystem = "windows"` so the
+// COM-activated path doesn't pop a console — but that means stderr goes to a
+// closed handle, and the default `fmt::init()` (writes-to-stderr) is silently
+// useless during Windows-driven activation. To get observable traces during
+// live validation, set `KEEPASSKEYWIN_LOG_FILE=<path>` (per-machine via
+// `setx /M`) before activation; tracing will append to that file. CLI
+// subcommands (register/smoke/etc.) inherit the parent console and keep
+// stderr routing when the env var is unset.
+fn init_tracing() {
+    if let Ok(path) = std::env::var("KEEPASSKEYWIN_LOG_FILE") {
+        if !path.trim().is_empty() {
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                fmt()
+                    .with_writer(Mutex::new(file))
+                    .with_ansi(false)
+                    .try_init()
+                    .ok();
+                tracing::info!(
+                    "[trace] file logging enabled — KEEPASSKEYWIN_LOG_FILE={path}"
+                );
+                return;
+            }
+        }
+    }
+    fmt::init();
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    fmt::init();
+    init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
     let sub_str = args.get(1).map(String::as_str).unwrap_or("");

@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using Newtonsoft.Json.Linq;
 using KeePassKeyWin.Core.Cbor;
 using KeePassKeyWin.Core.Crypto;
+using KeePassKeyWin.Core.Diagnostics;
 using KeePassKeyWin.Core.Security;
 using KeePassKeyWin.Core.Storage;
 using KeePassKeyWin.Core.WebAuthn;
@@ -250,12 +250,12 @@ namespace KeePassKeyWin.Core.Ipc
                     "keepasskeywin.getAssertionRaw: malformed CBOR: " + ex.Message);
             }
 
-            Debug.WriteLine($"[getAssert] ENTRY clientDataHash_len={req.ClientDataHash.Length} rpId={req.RpId} allowList_count={req.AllowListCredIds.Count}");
+            TraceLogger.WriteLine($"[getAssert] ENTRY clientDataHash_len={req.ClientDataHash.Length} rpId={req.RpId} allowList_count={req.AllowListCredIds.Count}");
 
             // options.up=false is forbidden by our v1 (we always require user presence).
             if (!req.OptionsUp)
             {
-                Debug.WriteLine("[getAssert] REJECT options.up=false");
+                TraceLogger.WriteLine("[getAssert] REJECT options.up=false");
                 throw new RpcException(RpcErrorCode.InvalidOption,
                     "keepasskeywin.getAssertionRaw: options.up=false is not supported.");
             }
@@ -271,12 +271,12 @@ namespace KeePassKeyWin.Core.Ipc
                 var candidates = _store.FindByRpId(req.RpId);
                 if (candidates.Count == 0)
                 {
-                    Debug.WriteLine($"[getAssert] REJECT discoverable — no credential found for rpId={req.RpId}");
+                    TraceLogger.WriteLine($"[getAssert] REJECT discoverable — no credential found for rpId={req.RpId}");
                     throw new RpcException(RpcErrorCode.CredentialNotFound,
                         "keepasskeywin.getAssertionRaw: no passkey found for RP '" + req.RpId + "'.");
                 }
                 selected = candidates[0];
-                Debug.WriteLine($"[getAssert] discoverable — selected credentialId={SafePrefix(selected.CredentialId, 8)}");
+                TraceLogger.WriteLine($"[getAssert] discoverable — selected credentialId={SafePrefix(selected.CredentialId, 8)}");
             }
             else
             {
@@ -293,7 +293,7 @@ namespace KeePassKeyWin.Core.Ipc
                 }
                 if (selected == null)
                 {
-                    Debug.WriteLine("[getAssert] REJECT no allowList credential matched the vault");
+                    TraceLogger.WriteLine("[getAssert] REJECT no allowList credential matched the vault");
                     throw new RpcException(RpcErrorCode.CredentialNotFound,
                         "keepasskeywin.getAssertionRaw: no credential in allowList matches the vault.");
                 }
@@ -301,8 +301,8 @@ namespace KeePassKeyWin.Core.Ipc
 
             var oldCount = selected.SignCount;
             uint newCount = _store.IncrementSignCount(selected.CredentialId);
-            Debug.WriteLine($"[getAssert] selected credentialId={SafePrefix(selected.CredentialId, 8)} userName={selected.UserName}");
-            Debug.WriteLine($"[getAssert] signCount {oldCount} -> {newCount}");
+            TraceLogger.WriteLine($"[getAssert] selected credentialId={SafePrefix(selected.CredentialId, 8)} userName={selected.UserName}");
+            TraceLogger.WriteLine($"[getAssert] signCount {oldCount} -> {newCount}");
 
             // Build 37-byte assertion authData (no attested credential data).
             var authData = AuthDataBuilder.BuildAssertion(selected.RpId, userVerified: uv, signCount: newCount);
@@ -323,7 +323,7 @@ namespace KeePassKeyWin.Core.Ipc
             // the RP can identify which account was used. Non-discoverable: userRecord=null.
             PasskeyRecord? userRecord = isDiscoverable ? selected : null;
             var responseBytes = BuildAssertionResponse(rawCredIdBytes, authData, signature, userRecord, uv);
-            Debug.WriteLine($"[getAssert] DONE response_size={responseBytes.Length}B discoverable={isDiscoverable}");
+            TraceLogger.WriteLine($"[getAssert] DONE response_size={responseBytes.Length}B discoverable={isDiscoverable}");
 
             return new JObject
             {
@@ -933,13 +933,13 @@ namespace KeePassKeyWin.Core.Ipc
                     throw new RpcException(RpcErrorCode.InvalidParams,
                         $"{method}: UV signature verification failed.");
 
-                Debug.WriteLine($"[uv-verify] OK method={method} tier={uvTier}");
+                TraceLogger.WriteLine($"[uv-verify] OK method={method} tier={uvTier}");
                 return;
             }
 
             if (uvTier == "v1" || string.IsNullOrEmpty(uvTier))
             {
-                Debug.WriteLine($"[uv-verify] v1 fallback method={method} tier={uvTier ?? "absent"}");
+                TraceLogger.WriteLine($"[uv-verify] v1 fallback method={method} tier={uvTier ?? "absent"}");
 
                 if (_uvFallbackPrompt == null)
                     throw new RpcException(RpcErrorCode.InvalidParams,
@@ -1004,7 +1004,7 @@ namespace KeePassKeyWin.Core.Ipc
             // emergency escape hatch works even when the cache is empty.
             if (IsBypassEnabled())
             {
-                Debug.WriteLine($"[sig-verify] BYPASS via {BypassEnvVars.SkipPluginSigVerify} for {method} — DO NOT USE IN PRODUCTION");
+                TraceLogger.WriteLine($"[sig-verify] BYPASS via {BypassEnvVars.SkipPluginSigVerify} for {method} — DO NOT USE IN PRODUCTION");
                 return cborBytes;
             }
 
@@ -1012,7 +1012,7 @@ namespace KeePassKeyWin.Core.Ipc
             var pubKey = OpSignPubKeyCache.Current;
             if (pubKey == null)
             {
-                Debug.WriteLine($"[sig-verify] REJECT {method}: op-sign pubkey cache is empty");
+                TraceLogger.WriteLine($"[sig-verify] REJECT {method}: op-sign pubkey cache is empty");
                 throw new RpcException(RpcErrorCode.InvalidParams,
                     $"{method}: op-sign pubkey not cached (handshake did not deliver opSignPublicKeyB64). " +
                     $"Set {BypassEnvVars.SkipPluginSigVerify}=1 to bypass for emergency.");
@@ -1022,7 +1022,7 @@ namespace KeePassKeyWin.Core.Ipc
             var sigB64 = obj["pbRequestSignatureB64"]?.Value<string>();
             if (string.IsNullOrEmpty(sigB64))
             {
-                Debug.WriteLine($"[sig-verify] REJECT {method}: pbRequestSignatureB64 missing");
+                TraceLogger.WriteLine($"[sig-verify] REJECT {method}: pbRequestSignatureB64 missing");
                 throw new RpcException(RpcErrorCode.InvalidParams,
                     $"{method}: pbRequestSignatureB64 param is required.");
             }
@@ -1040,12 +1040,12 @@ namespace KeePassKeyWin.Core.Ipc
             // Step 4: cryptographic verification.
             if (!EcdsaVerifier.Verify(pubKey.Value.Span, cborBytes, sigBytes))
             {
-                Debug.WriteLine($"[sig-verify] REJECT {method}: signature verification failed (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
+                TraceLogger.WriteLine($"[sig-verify] REJECT {method}: signature verification failed (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
                 throw new RpcException(RpcErrorCode.InvalidParams,
                     $"{method}: pbRequestSignature verification failed.");
             }
 
-            Debug.WriteLine($"[sig-verify] OK {method} (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
+            TraceLogger.WriteLine($"[sig-verify] OK {method} (cbor={cborBytes.Length}B sig={sigBytes.Length}B)");
             return cborBytes;
         }
 

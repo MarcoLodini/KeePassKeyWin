@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using KeePass.Plugins;
 using Microsoft.Win32;
+using KeePassKeyWin.Core.Diagnostics;
 using KeePassKeyWin.Core.Ipc;
 using KeePassKeyWin.Core.Platform;
 using KeePassKeyWin.Plugin.Ipc;
@@ -52,6 +53,11 @@ public sealed class KeePassKeyWinExt : KeePass.Plugins.Plugin
         // Initialize() didn't run at all (assembly load failure, binding issue).
         Diag("LastStep", "Initialize:entered");
         Diag("LastStepTime", DateTime.UtcNow.ToString("o"));
+
+        // Open the diagnostic file logger if KEEPASSKEYWIN_LOG_FILE_PLUGIN is
+        // set. Idempotent + best-effort — never fails Initialize().
+        TraceLogger.Init();
+        TraceLogger.WriteLine("[init] KeePassKeyWin plugin Initialize entered");
 
         try
         {
