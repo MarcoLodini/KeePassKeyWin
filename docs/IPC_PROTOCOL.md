@@ -157,7 +157,10 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
 
 - `uvBindingTier` — optional (Phase 5.UV.3+); absent / `null` / `""` is treated
   as `"v1"` for pre-5.UV.3 sidecar interoperability. String enum indicating which
-  Windows entrypoint the sidecar resolved for the UV call. The plugin's branch table:
+  Windows entrypoint **actually completed** the UV call (since 5.UV.7 this is the
+  post-fallback entrypoint, not necessarily the one that resolved at load time — a
+  v2 symbol that resolves at load time but returns E_NOTIMPL at call time will report
+  `"v1"` because the fallback to v1 completed the call). The plugin's branch table:
 
   | `uvBindingTier` value           | Plugin action                                                 |
   |---------------------------------|---------------------------------------------------------------|

@@ -104,6 +104,14 @@ cryptographic verification is not possible (v1 UV signature covers no caller-sup
 buffer); the plugin shows a once-per-process Yes/No confirmation dialog and caches
 the user's decision for the plugin-process lifetime.
 
+> **Note (5.UV.7):** On Windows 11 24H2 build 26100.6725+ specifically, all dispatches
+> degrade to v1 at call time because Microsoft's stable `WebAuthNPluginPerformUserVerification2`
+> export is a forward-declared stub returning E_NOTIMPL. The sidecar detects this on the
+> first call, falls through to v1, and caches the decision for the process lifetime.
+> Plugin-side behaviour is identical to a load-time-resolved v1 dispatch (tier=v1, fallback
+> dialog fires). A future Windows update shipping the actual implementation will be
+> adopted automatically on the next COM activation.
+
 `opSignPublicKeyB64` is **required** in the hello handshake since 5.UV.4. Absence or
 malformed base64 rejects the hello with `-32602 InvalidParams`; the sidecar returns
 `Err` from `handshake()` before sending the hello if the key-fetch fails.

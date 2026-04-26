@@ -31,6 +31,22 @@
 //! Which tier resolved is returned alongside every UV call result so the IPC
 //! layer can forward it to the plugin (for the 5.UV.4 fallback-warning dialog).
 //!
+//! ## Phase 5.UV.7: Call-time v2→v1 fallback on E_NOTIMPL
+//!
+//! On Windows 11 24H2 build 26100.6725+ (KB5068861, Nov 2025) the stable
+//! `WebAuthNPluginPerformUserVerification2` export resolves at load time but
+//! returns `E_NOTIMPL` (0x80004001) at call time — Microsoft shipped the symbol
+//! before the implementation. The load-time triple-fallback (5.UV.3) is therefore
+//! insufficient on this OS version: picking the resolved stable name commits us to
+//! a doomed call.
+//!
+//! The fix is a call-time fallback: when v2 returns E_NOTIMPL, the helper falls
+//! through to v1 in the same dispatch and caches the decision so subsequent
+//! dispatches skip the wasted v2 call. The cache is per-process (one-way latch
+//! — set on first E_NOTIMPL, never cleared); a fresh COM activation re-probes
+//! so a future Windows update that ships the real implementation is adopted
+//! automatically once it returns S_OK.
+//!
 //! ## Debug override: `KEEPASSKEYWIN_FORCE_UV_V1=1`
 //!
 //! The triple-fallback lookup makes the v1 path unreachable on any Windows
@@ -43,6 +59,7 @@
 #![cfg(windows)]
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::core::{HRESULT, PCSTR, PCWSTR};
 use windows::Win32::Foundation::HMODULE;
@@ -127,12 +144,13 @@ type PfnFreeUvResponse = unsafe extern "system" fn(*mut u8);
 /// stabilises the `_2` form or adds a `_3` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UvTier {
-    /// `WebAuthNPluginPerformUserVerification2` resolved (stable name —
-    /// may not exist on current 24H2 builds; coded for future stabilisation).
+    /// `WebAuthNPluginPerformUserVerification2` resolved (stable name).
+    /// On Windows 11 24H2 build 26100.6725+ (KB5068861, Nov 2025) this symbol
+    /// resolves at load time but returns E_NOTIMPL at call time — the 5.UV.7
+    /// call-time fallback detects this and falls through to v1 in the same
+    /// dispatch, reporting the final tier as `V1`.
     V2Stable,
     /// `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` resolved.
-    /// This is the tier that resolves on Windows 11 24H2 build 26100.6725+
-    /// (KB5068861, Nov 2025) at time of writing.
     V2Experimental,
     /// Only `WebAuthNPluginPerformUserVerification` (v1) resolved.
     /// The UV response signature is still returned by Windows but was NOT
@@ -169,6 +187,13 @@ struct WebauthnBindings {
     /// is `None`; one of the `V2*` variants when it is `Some`.
     perform_uv_tier: UvTier,
     free_uv_response: PfnFreeUvResponse,
+    /// Set true after the first v2 call returned E_NOTIMPL — subsequent dispatches
+    /// short-circuit to v1 without paying the wasted v2 call. Per-process cache;
+    /// a fresh COM activation re-probes (Microsoft may ship the v2 implementation
+    /// in a future Windows update). Only E_NOTIMPL poisons this — other errors
+    /// (E_FAIL, E_ABORT, E_INVALIDARG) leave it false because they reflect
+    /// transient or per-request failures, not API absence.
+    v2_unimplemented: AtomicBool,
     /// Which symbol name was resolved for `add` — diagnostic only. Stored
     /// as a static string so we can report it even after the call crashes.
     add_symbol_name: &'static str,
@@ -251,6 +276,7 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
             perform_uv:       unsafe { std::mem::transmute::<_, PfnPerformUv>(perform_uv_raw) },
             perform_uv_v2:    perform_uv_v2_raw.map(|p| unsafe { std::mem::transmute::<_, PfnPerformUv2>(p) }),
             perform_uv_tier,
+            v2_unimplemented: AtomicBool::new(false),
             free_uv_response: unsafe { std::mem::transmute::<_, PfnFreeUvResponse>(free_uv) },
             add_symbol_name:  add_name,
             perform_uv_symbol_name: uv2_name,
@@ -340,22 +366,53 @@ pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthent
     }
 }
 
-/// Call the best-available `PerformUserVerification` entrypoint — v2 if it
-/// resolved, v1 otherwise — and return `(HRESULT, UvTier)`.
+// ── Pure helper functions (testable without FFI) ──────────────────────────────
+
+/// Returns `true` iff the helper should fall back to v1 in this dispatch
+/// based on the v2 result. E_NOTIMPL (0x80004001) is the only HRESULT that
+/// triggers fallback; all other errors propagate as-is.
 ///
-/// ## Fallback behaviour
+/// E_ABORT (user-cancel) must not trigger fallback — the user's cancellation
+/// must propagate so the next dispatch in the process still tries v2 rather
+/// than silently re-prompting via v1.
+#[inline]
+fn should_fallback_to_v1(v2_hr: HRESULT) -> bool {
+    v2_hr.0 as u32 == 0x80004001 // E_NOTIMPL
+}
+
+/// Updates the per-process v2-unimplemented cache based on the v2 call's
+/// HRESULT. Sets the flag iff the HRESULT was E_NOTIMPL; leaves it alone
+/// otherwise. This is the single authoritative write site for the cache —
+/// `perform_user_verification_2` calls this after every v2 invocation so
+/// the test exercises the same code path as production.
+#[inline]
+fn observe_v2_result(cache: &AtomicBool, hr: HRESULT) {
+    if should_fallback_to_v1(hr) {
+        cache.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Call the best-available `PerformUserVerification` entrypoint — v2 with
+/// call-time E_NOTIMPL fallback to v1 — and return `(HRESULT, UvTier)`.
 ///
-/// - **V2Stable / V2Experimental:** Builds a
-///   [`WebauthnPluginUserVerificationRequest2`] (48 bytes) with
-///   `cb_buffer_to_sign = buffer_to_sign.len()` and
-///   `pb_buffer_to_sign = buffer_to_sign.as_ptr()`. The buffer must remain
-///   live for the duration of the call (guaranteed when `buffer_to_sign` is
-///   a slice of a stack-allocated digest — SHA-256 output is 32 bytes).
-/// - **V1:** Builds a [`WebauthnPluginUserVerificationRequest`] (32 bytes);
-///   `buffer_to_sign` is **discarded** (v1 has no such field). The Windows
-///   runtime still returns an opaque UV response, but the plugin cannot
-///   verify it without the buffer-to-sign handshake. The `V1` tier in the
-///   returned pair signals this to the caller for IPC forwarding.
+/// ## Dispatch logic
+///
+/// 1. **Pre-check.** If `v2_unimplemented` cache is set OR `perform_uv_v2`
+///    is `None`, skip v2 entirely and call v1 directly. Returns `(hr, V1)`.
+/// 2. **Try v2.** Builds the 48-byte request and calls the v2 fn pointer.
+/// 3. **E_NOTIMPL from v2.** Sets `v2_unimplemented` (one-way latch), logs a
+///    warn, then calls v1 with the same 32-byte request shape. Returns `(hr, V1)`.
+///    The latch means subsequent dispatches skip step 2 entirely; it is only
+///    E_NOTIMPL that poisons the cache — transient errors leave it false.
+/// 4. **Any other v2 error.** Returns `(hr, b.perform_uv_tier)` unchanged.
+///    E_ABORT (user-cancel) is handled here — it must NOT trigger the v1
+///    fallback; the dispatcher's E_ABORT check fires on the returned HRESULT.
+/// 5. **v2 success (S_OK).** Returns `(hr, b.perform_uv_tier)` unchanged.
+///
+/// The `UvTier` returned reflects what was *actually* called on this dispatch.
+/// When the fallback fires, the dispatcher logs `tier=v1`, IPC params get
+/// `uvBindingTier="v1"`, and the plugin's 5.UV.4 v1-branch fires the fallback
+/// dialog. All downstream code is unchanged.
 ///
 /// ## REFGUID trap
 ///
@@ -382,29 +439,59 @@ pub fn perform_user_verification_2(
     pp_response:     *mut *mut u8,
 ) -> Result<(HRESULT, UvTier), String> {
     let b = bindings().map_err(|s| s.to_string())?;
-    if let Some(pfn_v2) = b.perform_uv_v2 {
-        // v2 path: build the 48-byte request with buffer_to_sign.
-        let req2 = WebauthnPluginUserVerificationRequest2 {
-            hwnd,
-            p_transaction_id:  p_txid,
-            pwsz_username:     pwsz_user,
-            pwsz_display_hint: pwsz_hint,
-            cb_buffer_to_sign: buffer_to_sign.len() as u32,
-            pb_buffer_to_sign: buffer_to_sign.as_ptr(),
-        };
-        let hr = unsafe { pfn_v2(&req2 as *const _, cb_response, pp_response) };
-        Ok((hr, b.perform_uv_tier))
-    } else {
-        // v1 fallback: build the 32-byte request; buffer_to_sign discarded.
+
+    // Shared v1 call — used both by the pre-check arm (cache hit / no v2 symbol)
+    // and by the E_NOTIMPL fallback arm. Identical 32-byte request shape in both
+    // cases; buffer_to_sign is discarded (v1 has no such field).
+    let call_v1 = |b: &WebauthnBindings| -> HRESULT {
         let req1 = WebauthnPluginUserVerificationRequest {
             hwnd,
             p_transaction_id:  p_txid,
             pwsz_username:     pwsz_user,
             pwsz_display_hint: pwsz_hint,
         };
-        let hr = unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) };
-        Ok((hr, UvTier::V1))
+        unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) }
+    };
+
+    // Pre-check: if v2 is known to be unimplemented (cached from a prior
+    // dispatch in this process) or no v2 symbol resolved, go straight to v1.
+    let Some(pfn_v2) = b.perform_uv_v2 else {
+        let hr = call_v1(b);
+        return Ok((hr, UvTier::V1));
+    };
+    if b.v2_unimplemented.load(Ordering::Relaxed) {
+        let hr = call_v1(b);
+        return Ok((hr, UvTier::V1));
     }
+
+    // Try v2: build the 48-byte request with buffer_to_sign.
+    let req2 = WebauthnPluginUserVerificationRequest2 {
+        hwnd,
+        p_transaction_id:  p_txid,
+        pwsz_username:     pwsz_user,
+        pwsz_display_hint: pwsz_hint,
+        cb_buffer_to_sign: buffer_to_sign.len() as u32,
+        pb_buffer_to_sign: buffer_to_sign.as_ptr(),
+    };
+    let hr = unsafe { pfn_v2(&req2 as *const _, cb_response, pp_response) };
+
+    // Update cache based on the v2 result. Only E_NOTIMPL flips the latch.
+    observe_v2_result(&b.v2_unimplemented, hr);
+
+    if should_fallback_to_v1(hr) {
+        // v2 returned E_NOTIMPL: Microsoft's stable export is unimplemented on
+        // this Windows build. Cache is already set by observe_v2_result above.
+        // Fall through to v1 in this same dispatch.
+        tracing::warn!(
+            "[uv] v2 returned E_NOTIMPL — falling back to v1 for this and \
+             all subsequent dispatches in this process"
+        );
+        let v1_hr = call_v1(b);
+        return Ok((v1_hr, UvTier::V1));
+    }
+
+    // v2 returned S_OK or a non-E_NOTIMPL error — propagate as-is.
+    Ok((hr, b.perform_uv_tier))
 }
 
 /// Call `WebAuthNPluginFreeUserVerificationResponse` (stable) or
@@ -420,5 +507,70 @@ pub fn free_user_verification_response(pb_response: *mut u8) {
     }
     if let Ok(b) = bindings() {
         unsafe { (b.free_uv_response)(pb_response) };
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    // ── should_fallback_to_v1 classifier ─────────────────────────────────────
+
+    #[test]
+    fn e_notimpl_triggers_fallback() {
+        // E_NOTIMPL = 0x80004001 — the only HRESULT that triggers v1 fallback.
+        assert!(should_fallback_to_v1(HRESULT(0x80004001u32 as i32)));
+    }
+
+    #[test]
+    fn s_ok_does_not_trigger_fallback() {
+        assert!(!should_fallback_to_v1(HRESULT(0)));
+    }
+
+    #[test]
+    fn e_abort_does_not_trigger_fallback() {
+        // E_ABORT (0x80004004) — user-cancel must propagate, not silently
+        // re-prompt via v1; the next dispatch must still try v2.
+        assert!(!should_fallback_to_v1(HRESULT(0x80004004u32 as i32)));
+    }
+
+    #[test]
+    fn other_errors_do_not_trigger_fallback() {
+        // E_FAIL
+        assert!(!should_fallback_to_v1(HRESULT(0x80004005u32 as i32)));
+        // E_INVALIDARG
+        assert!(!should_fallback_to_v1(HRESULT(0x80070057u32 as i32)));
+        // E_OUTOFMEMORY
+        assert!(!should_fallback_to_v1(HRESULT(0x8007000Eu32 as i32)));
+    }
+
+    // ── observe_v2_result cache mutation ─────────────────────────────────────
+
+    #[test]
+    fn observe_v2_result_flips_cache_on_e_notimpl_only() {
+        let cache = AtomicBool::new(false);
+
+        // S_OK — cache stays false.
+        observe_v2_result(&cache, HRESULT(0));
+        assert!(!cache.load(Ordering::Relaxed), "S_OK must not poison the cache");
+
+        // E_ABORT — cache stays false.
+        observe_v2_result(&cache, HRESULT(0x80004004u32 as i32));
+        assert!(!cache.load(Ordering::Relaxed), "E_ABORT must not poison the cache");
+
+        // E_FAIL — cache stays false.
+        observe_v2_result(&cache, HRESULT(0x80004005u32 as i32));
+        assert!(!cache.load(Ordering::Relaxed), "E_FAIL must not poison the cache");
+
+        // E_NOTIMPL — cache flips to true (one-way latch).
+        observe_v2_result(&cache, HRESULT(0x80004001u32 as i32));
+        assert!(cache.load(Ordering::Relaxed), "E_NOTIMPL must poison the cache");
+
+        // S_OK after E_NOTIMPL — cache stays true (latch is one-way).
+        observe_v2_result(&cache, HRESULT(0));
+        assert!(cache.load(Ordering::Relaxed), "latch must remain set after S_OK");
     }
 }
