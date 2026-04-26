@@ -345,9 +345,11 @@ pub(crate) mod imp {
         use base64::Engine;
         // info-level: these are infrequent per-dispatch breadcrumbs (one per
         // operation) needed for any "why did the sidecar die at step N?" investigation.
-        // Note: extract_prompt_hint -> "<username>" below lands in the file log when
-        // KEEPASSKEYWIN_LOG_FILE is set. File logging is opt-in and the enabling user
-        // accepts this trade-off, but the username-in-log fact is noted here for future readers.
+        // The extract_prompt_hint line below is logged at debug! (not via this
+        // macro) because the username string can contain RP-supplied PII
+        // (display name, email-shaped handles); we want it gated behind
+        // RUST_LOG=debug so an admin enabling file logging on a shared/kiosk
+        // machine doesn't capture authenticating-user identifiers by default.
         macro_rules! dbg_step { ($($arg:tt)*) => {
             tracing::info!("[dispatch] {}", format_args!($($arg)*))
         } }
@@ -361,8 +363,11 @@ pub(crate) mod imp {
                   cbor_bytes.len(), req.request_type, req.cb_request_signature);
 
         // ── Step 1: extract UV prompt hint from CBOR ──────────────────────────
+        // PII gate: username_hint comes from the RP's userEntity.name (often an
+        // email or handle). Logged at debug-level only, not the info-level
+        // dbg_step! macro — see the macro definition above for rationale.
         let username_hint = extract_prompt_hint(cbor_bytes, method);
-        dbg_step!("extract_prompt_hint -> \"{username_hint}\"");
+        tracing::debug!("[dispatch] extract_prompt_hint -> \"{username_hint}\"");
 
         // ── Sig-verify gate (between CBOR extraction and UV) ──────────────────
         // Verify pbRequestSignature before popping the Windows Hello UV prompt.

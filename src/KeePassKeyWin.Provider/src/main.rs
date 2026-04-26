@@ -61,16 +61,21 @@ fn parse_subcommand(s: &str) -> Subcommand {
 // stderr routing when the env var is unset.
 fn init_tracing() {
     // RUST_LOG is honoured on both routes (file and stderr) via EnvFilter.
-    // Default filter is "info" when RUST_LOG is unset or unparseable, which
-    // keeps all activation/dispatch breadcrumbs visible without requiring the
-    // user to remember to set RUST_LOG. For deeper tracing (request_sig,
-    // NCrypt call sites, etc.), set RUST_LOG=debug or
-    // RUST_LOG=keepasskeywin_provider=debug,info before activation.
-    // The file route is the most common debug scenario: a user enabling
-    // KEEPASSKEYWIN_LOG_FILE is already opted-in to structured traces, so
-    // EnvFilter is especially important to honour on that path.
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    // The file route is the common debug scenario: a user enabling
+    // KEEPASSKEYWIN_LOG_FILE is already opted-in to structured traces, so the
+    // env filter must apply there too.
+    //
+    // Use `from_env_lossy()` rather than `try_from_default_env().unwrap_or_else`:
+    // the latter collapses NotPresent and ParseError into the same fallback,
+    // silently dropping a typo in the user's RUST_LOG (e.g.,
+    // `keepasskeywin_provicder=debug` — one letter off) and degrading to
+    // INFO with no signal. Lossy parsing keeps every directive it can parse,
+    // emits a warning per invalid one, and applies the default only when
+    // nothing valid remains. Strictly safer for live debugging — which is
+    // the whole point of this patch.
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        .from_env_lossy();
 
     if let Ok(path) = std::env::var("KEEPASSKEYWIN_LOG_FILE") {
         if !path.trim().is_empty() {

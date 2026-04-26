@@ -290,8 +290,11 @@ INFO level (no `RUST_LOG` change needed):
 
 `RUST_LOG` is now honoured on both the file route and the stderr route. The
 default when `RUST_LOG` is unset is `info`, which captures all the always-on
-breadcrumbs above. Set `RUST_LOG=debug` to also see lower-level diagnostics
-such as `request_sig.rs` internals and NCrypt call sites.
+breadcrumbs above. Set `RUST_LOG=debug` to additionally see lower-level
+diagnostics — most notably the RP-supplied username hint at dispatch time
+(`[dispatch] extract_prompt_hint -> "..."`), which is otherwise gated behind
+debug-level on PII grounds. Invalid `RUST_LOG` directives are logged and
+skipped (lossy parsing); the rest of the filter still applies.
 
 ```powershell
 setx /M RUST_LOG "debug"                              # everything (verbose)
