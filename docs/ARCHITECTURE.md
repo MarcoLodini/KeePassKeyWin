@@ -82,6 +82,18 @@ Two plugin-side verification gates protect every `makeCredentialRaw` / `getAsser
 verifier since 5.UV.5 removed the sidecar-side gate; the sidecar forwards the raw bytes
 but performs no crypto on them.
 
+> **Accepted trade-off (5.UV.5):** The pre-5.UV.5 sidecar gate ran *before*
+> `WebAuthNPluginPerformUserVerification`, so a forged or malformed request
+> was rejected before any Windows Hello prompt could fire. Post-5.UV.5, sig
+> verification happens plugin-side after the UV call, so a forged request
+> can elicit a biometric prompt before the plugin rejects it. The vault
+> remains unreachable in either case. Forging the op-sign signature requires
+> local code execution as the user (the per-process op-signing key is held
+> by `webauthn.dll`); at that level of compromise, an unsolicited Hello
+> prompt is not a meaningful escalation. Centralising verification
+> plugin-side eliminated the keypair-desync race documented in pre-5.UV.5
+> diagnostics and removed a latent NCrypt verify bug.
+
 **Gate 2 — UV response signature (Phase 5.UV.4+):** Every dispatch also carries
 `uvSignatureB64` (the UV response signature) and `uvBindingTier` (which Windows UV
 entrypoint resolved). For v2-tier dispatches (`"v2_stable"` / `"v2_experimental"`),

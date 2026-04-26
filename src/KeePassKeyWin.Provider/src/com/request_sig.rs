@@ -23,8 +23,12 @@
 //! cache it in a `OnceLock`, and discard it when the process exits. The
 //! cache is fail-closed: a bad key-fetch poisons the `OnceLock` with the
 //! error HRESULT, and every subsequent call returns that error permanently
-//! without retrying. This is intentional: if the key-fetch fails we have
-//! no verifiable basis for trusting requests and should reject them all.
+//! without retrying. The fail-closed policy propagates: a `None` from
+//! `get_op_sign_pub_key_bytes_for_hello()` causes `handshake()` to return
+//! `Err(InvalidRequest)`, the connection is rejected, and no vault dispatch
+//! ever reaches the plugin's verifier. This module no longer enforces the
+//! gate directly (sidecar-side verification was removed in 5.UV.5); it
+//! sources and distributes the key, and the plugin is the sole verifier.
 //!
 //! **Assumption**: `webauthn.dll` does NOT pool COM server processes across
 //! their lifetime. If Microsoft ever changes this model (i.e., one COM EXE

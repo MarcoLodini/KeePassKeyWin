@@ -266,15 +266,11 @@ pub(crate) mod imp {
             req.transaction_id.data4[6], req.transaction_id.data4[7],
         );
 
-        // Note: no sig-verify gate on cancel_operation.
-        // Microsoft's PasskeyManager reference sample (PluginAuthenticatorImpl.cpp)
-        // does NOT verify pbRequestSignature in CancelOperation — it only reads
-        // transactionId to confirm the cancellation targets the active operation.
-        // Cancel is a best-effort signal with no side effects beyond aborting the
-        // in-flight UV prompt; applying NTE_BAD_SIGNATURE here would break all
-        // valid cancellations. Sig verification is only required for MakeCredential
-        // and GetAssertion (dispatch_operation), where a forged request could cause
-        // harm (spurious UV prompt, unauthorised vault access).
+        // cancel_operation forwards no pbRequestSignature to the plugin — cancel
+        // is a best-effort abort signal with no vault side-effects, matching the
+        // Microsoft PasskeyManager sample (PluginAuthenticatorImpl.cpp) which also
+        // skips signature verification on CancelOperation. Plugin-side sig
+        // verification (5.UV.2/5.UV.5) covers MakeCredential and GetAssertion only.
 
         // Take pipe out of state, release lock before STA-pumping wait.
         let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
@@ -370,6 +366,13 @@ pub(crate) mod imp {
         tracing::debug!("[dispatch] extract_prompt_hint -> \"{username_hint}\"");
 
         // Forward sig bytes to the plugin for plugin-side verification (5.UV.2/5.UV.5).
+        // Trade-off note: the pre-5.UV.5 sidecar gate verified pbRequestSignature
+        // before perform_user_verification, so a forged request was rejected
+        // before any UV prompt could fire. Post-5.UV.5, sig verification happens
+        // plugin-side after the UV call (see ARCHITECTURE.md § "Trust boundary"
+        // — Gate 1's accepted trade-off block). The vault is still unreachable;
+        // the residual exposure is "spurious Hello prompt on forged request",
+        // which requires local code exec to trigger.
         let sig_bytes: &[u8] = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
             unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
         } else {

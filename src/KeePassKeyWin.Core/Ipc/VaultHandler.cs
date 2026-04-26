@@ -983,8 +983,8 @@ namespace KeePassKeyWin.Core.Ipc
         //   4. EcdsaVerifier.Verify(pubkey, cborBytes, sigBytes) false → reject.
         //
         // All rejections throw RpcException(InvalidParams, ...) with a
-        // discriminating message. Sidecar still verifies for belt-and-braces
-        // through 5.UV.2; its gate is removed in 5.UV.5.
+        // discriminating message. The plugin is the sole verifier since 5.UV.5
+        // removed the sidecar-side gate.
         internal static byte[] VerifyAndDecodeCbor(JObject obj, string method)
         {
             var cborB64 = RequireString(obj, "cbor");
