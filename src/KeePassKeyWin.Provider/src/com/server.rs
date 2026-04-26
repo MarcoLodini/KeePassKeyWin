@@ -343,8 +343,13 @@ pub(crate) mod imp {
         method: &str,
     ) -> HRESULT {
         use base64::Engine;
+        // info-level: these are infrequent per-dispatch breadcrumbs (one per
+        // operation) needed for any "why did the sidecar die at step N?" investigation.
+        // Note: extract_prompt_hint -> "<username>" below lands in the file log when
+        // KEEPASSKEYWIN_LOG_FILE is set. File logging is opt-in and the enabling user
+        // accepts this trade-off, but the username-in-log fact is noted here for future readers.
         macro_rules! dbg_step { ($($arg:tt)*) => {
-            tracing::debug!("[dispatch] {}", format_args!($($arg)*))
+            tracing::info!("[dispatch] {}", format_args!($($arg)*))
         } }
 
         let obj = unsafe { &*this };

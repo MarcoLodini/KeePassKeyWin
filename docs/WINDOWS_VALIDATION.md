@@ -275,11 +275,39 @@ Useful breadcrumbs to grep for:
 - `[uv-verify]` — plugin's per-op UV verification result.
 - `[handshake]` — hello frame validation.
 
-Unset both vars when done:
+The following activation/dispatch breadcrumbs are always visible at the default
+INFO level (no `RUST_LOG` change needed):
+
+- `[activate] cf_create_instance session_id={n}` — sidecar woke up for this Windows session
+- `[activate] pipe connect OK | FAILED: {e}` — IPC pipe outcome
+- `[activate] read nonce from HKCU: "{prefix}..." ({n} chars)` / `read nonce FAILED` — handshake nonce visibility
+- `[activate] handshake OK | FAILED: {e:?}` — keepasskeywin.hello completed
+- `[dispatch] ENTRY method={m} cbor_len={n} request_type={...} cb_sig={n}` — dispatch arrived
+- `[dispatch] UV call ...`, `[dispatch] UV returned hr=0x... cb_response={n} tier={t}` — UV outcome
+- `[dispatch] RPC call ... | RPC returned | DONE ok` — plugin pipeline
+
+#### `RUST_LOG` — controlling trace verbosity (Phase 5.UV.4.5+)
+
+`RUST_LOG` is now honoured on both the file route and the stderr route. The
+default when `RUST_LOG` is unset is `info`, which captures all the always-on
+breadcrumbs above. Set `RUST_LOG=debug` to also see lower-level diagnostics
+such as `request_sig.rs` internals and NCrypt call sites.
+
+```powershell
+setx /M RUST_LOG "debug"                              # everything (verbose)
+setx /M RUST_LOG "info"                               # default (always-on breadcrumbs)
+setx /M RUST_LOG "keepasskeywin_provider=debug,info"  # only this crate at debug, others at info
+```
+
+After setting, propagate the env var (sign out/in, or reinstall MSIX and
+restart KeePass — see Step 6b).
+
+Unset when done:
 
 ```powershell
 setx /M KEEPASSKEYWIN_LOG_FILE        ""
 setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN ""
+setx /M RUST_LOG                      ""
 ```
 
 ---

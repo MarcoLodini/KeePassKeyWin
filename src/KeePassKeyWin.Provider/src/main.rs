@@ -60,6 +60,18 @@ fn parse_subcommand(s: &str) -> Subcommand {
 // subcommands (register/smoke/etc.) inherit the parent console and keep
 // stderr routing when the env var is unset.
 fn init_tracing() {
+    // RUST_LOG is honoured on both routes (file and stderr) via EnvFilter.
+    // Default filter is "info" when RUST_LOG is unset or unparseable, which
+    // keeps all activation/dispatch breadcrumbs visible without requiring the
+    // user to remember to set RUST_LOG. For deeper tracing (request_sig,
+    // NCrypt call sites, etc.), set RUST_LOG=debug or
+    // RUST_LOG=keepasskeywin_provider=debug,info before activation.
+    // The file route is the most common debug scenario: a user enabling
+    // KEEPASSKEYWIN_LOG_FILE is already opted-in to structured traces, so
+    // EnvFilter is especially important to honour on that path.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
     if let Ok(path) = std::env::var("KEEPASSKEYWIN_LOG_FILE") {
         if !path.trim().is_empty() {
             if let Ok(file) = std::fs::OpenOptions::new()
@@ -68,6 +80,7 @@ fn init_tracing() {
                 .open(&path)
             {
                 fmt()
+                    .with_env_filter(env_filter)
                     .with_writer(Mutex::new(file))
                     .with_ansi(false)
                     .try_init()
@@ -79,7 +92,10 @@ fn init_tracing() {
             }
         }
     }
-    fmt::init();
+    fmt()
+        .with_env_filter(env_filter)
+        .try_init()
+        .ok();
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

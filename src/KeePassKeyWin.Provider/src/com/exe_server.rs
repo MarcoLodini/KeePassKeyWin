@@ -145,7 +145,7 @@ pub(crate) mod imp {
         this: *mut ClassFactory, _outer: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void,
     ) -> HRESULT {
         macro_rules! dbg_step { ($($arg:tt)*) => {
-            tracing::debug!("[activate] {}", format_args!($($arg)*))
+            tracing::info!("[activate] {}", format_args!($($arg)*))
         } }
 
         let session_id = unsafe { (*this).session_id };
