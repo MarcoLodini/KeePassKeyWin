@@ -39,6 +39,9 @@ pub mod com {
     // Debug-only override for the PerformUserVerification binding lookup.
     // Cross-platform (tests run on Linux). Read by webauthn_ext::bindings().
     pub mod uv_override;
+    // 5.UV.7 v2→v1 call-time fallback decision helpers + cache mutation.
+    // Cross-platform (tests run on Linux). Imported by webauthn_ext::perform_user_verification_2.
+    pub mod uv_fallback;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;

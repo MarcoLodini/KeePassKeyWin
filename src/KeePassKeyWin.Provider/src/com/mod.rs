@@ -18,5 +18,6 @@ pub mod server;
 #[cfg(windows)]
 pub mod exe_server;
 pub mod types;
+pub mod uv_fallback;
 #[cfg(windows)]
 pub mod webauthn_ext;
