@@ -216,7 +216,11 @@ static BINDINGS: OnceLock<Result<WebauthnBindings, String>> = OnceLock::new();
 /// On failure every subsequent call returns the same error; no retry.
 ///
 /// For `PerformUserVerification`, a triple-fallback runs in order:
-///   1. `WebAuthNPluginPerformUserVerification2` (stable v2 — may not resolve)
+///   1. `WebAuthNPluginPerformUserVerification2` (stable v2 — resolves on
+///      Win11 24H2 26100.6725+ but returns E_NOTIMPL at call time on builds
+///      where Microsoft's implementation is still a forward-declared stub;
+///      `perform_user_verification_2` handles this via the 5.UV.7 call-time
+///      fallback to v1)
 ///   2. `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` (experimental v2)
 ///   3. `WebAuthNPluginPerformUserVerification` (v1 — always the final fallback)
 fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
@@ -301,6 +305,14 @@ pub fn resolved_add_symbol_name() -> Option<&'static str> {
 /// v1 symbol name when only v1 resolved. `None` until bindings are
 /// initialized (i.e. until the first [`perform_user_verification_2`] call).
 /// Diagnostic only — surfaced in the dispatch log for live-validation triage.
+///
+/// **Caveat (5.UV.7):** this reports the *load-time* resolved symbol. On
+/// builds where the stable v2 export is a forward-declared E_NOTIMPL stub,
+/// `perform_user_verification_2` falls through to v1 at call time but this
+/// function continues to return `"WebAuthNPluginPerformUserVerification2"`.
+/// Code that needs to know which entrypoint *actually completed* a dispatch
+/// must inspect the `UvTier` returned by `perform_user_verification_2` —
+/// that value reflects post-fallback reality, this function does not.
 pub fn resolved_perform_uv_symbol_name() -> Option<&'static str> {
     let _ = bindings();
     BINDINGS.get().and_then(|r| r.as_ref().ok()).map(|b| b.perform_uv_symbol_name)
@@ -421,27 +433,18 @@ pub fn perform_user_verification_2(
 ) -> Result<(HRESULT, UvTier), String> {
     let b = bindings().map_err(|s| s.to_string())?;
 
-    // Shared v1 call — used both by the pre-check arm (cache hit / no v2 symbol)
-    // and by the E_NOTIMPL fallback arm. Identical 32-byte request shape in both
-    // cases; buffer_to_sign is discarded (v1 has no such field).
-    let call_v1 = |b: &WebauthnBindings| -> HRESULT {
-        let req1 = WebauthnPluginUserVerificationRequest {
-            hwnd,
-            p_transaction_id:  p_txid,
-            pwsz_username:     pwsz_user,
-            pwsz_display_hint: pwsz_hint,
-        };
-        unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) }
-    };
-
     // Pre-check: if v2 is known to be unimplemented (cached from a prior
     // dispatch in this process) or no v2 symbol resolved, go straight to v1.
+    // (v1 invocation is the free function `invoke_v1` below — extracted from a
+    // closure because the defensive-cleanup write to `*pp_response` in the
+    // E_NOTIMPL fallback arm conflicts with the borrow checker's view of a
+    // closure capturing the same raw pointer.)
     let Some(pfn_v2) = b.perform_uv_v2 else {
-        let hr = call_v1(b);
+        let hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
         return Ok((hr, UvTier::V1));
     };
     if b.v2_unimplemented.load(Ordering::Relaxed) {
-        let hr = call_v1(b);
+        let hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
         return Ok((hr, UvTier::V1));
     }
 
@@ -467,12 +470,50 @@ pub fn perform_user_verification_2(
             "[uv] v2 returned E_NOTIMPL — falling back to v1 for this and \
              all subsequent dispatches in this process"
         );
-        let v1_hr = call_v1(b);
+        // Defensive cleanup of v2 out-params before reusing them for v1.
+        // Microsoft's forward-declared E_NOTIMPL stub almost certainly bails
+        // without touching out-params, but the COM contract makes no such
+        // guarantee — and `perform_user_verification_2`'s own docs promise
+        // the caller can free `*pp_response` on every exit path. If a future
+        // partial implementation allocates and then returns E_NOTIMPL, v1's
+        // call below would overwrite the v2 pointer and leak the v2 buffer.
+        // Free here so the caller's free-on-exit only ever sees v1's output.
+        let v2_ptr = unsafe { *pp_response };
+        if !v2_ptr.is_null() {
+            free_user_verification_response(v2_ptr);
+            unsafe { *pp_response = std::ptr::null_mut(); }
+            unsafe { *cb_response = 0; }
+        }
+        let v1_hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
         return Ok((v1_hr, UvTier::V1));
     }
 
     // v2 returned S_OK or a non-E_NOTIMPL error — propagate as-is.
     Ok((hr, b.perform_uv_tier))
+}
+
+/// Build the 32-byte v1 request and dispatch via `b.perform_uv`. Used by both
+/// the cache-hit / no-v2-symbol pre-check arm and the E_NOTIMPL fallback arm
+/// of `perform_user_verification_2`. Free function (not a closure on the
+/// parent) because the closure capture of `pp_response` conflicts with the
+/// fallback arm's defensive write to `*pp_response`.
+#[inline]
+fn invoke_v1(
+    b: &WebauthnBindings,
+    hwnd: isize,
+    p_txid: *const Guid,
+    pwsz_user: *const u16,
+    pwsz_hint: *const u16,
+    cb_response: *mut u32,
+    pp_response: *mut *mut u8,
+) -> HRESULT {
+    let req1 = WebauthnPluginUserVerificationRequest {
+        hwnd,
+        p_transaction_id:  p_txid,
+        pwsz_username:     pwsz_user,
+        pwsz_display_hint: pwsz_hint,
+    };
+    unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) }
 }
 
 /// Call `WebAuthNPluginFreeUserVerificationResponse` (stable) or

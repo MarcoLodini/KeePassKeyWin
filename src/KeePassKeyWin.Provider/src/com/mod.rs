@@ -1,3 +1,14 @@
+//! ⚠ This file is **dead code**. The canonical `com` module is declared
+//! inline in `src/lib.rs` via `pub mod com { ... }`, so when Rust's module
+//! resolver is told `mod com;` from anywhere it uses the inline body and
+//! never reads `mod.rs`. We've left the file present (rather than deleting
+//! it outright) only because removing it is its own change with its own
+//! review surface — but **do NOT add new `pub mod foo;` declarations here**
+//! expecting them to take effect. Add them in `src/lib.rs` inside the inline
+//! `pub mod com { ... }` block instead. Slated for removal at 5.UV.6 polish.
+//!
+//! ── Original (now-stale) header preserved for context ────────────────────
+//!
 //! COM bindings for IPluginAuthenticator.
 //!
 //! Microsoft's win32metadata does not yet include IPluginAuthenticator, so we
@@ -18,6 +29,5 @@ pub mod server;
 #[cfg(windows)]
 pub mod exe_server;
 pub mod types;
-pub mod uv_fallback;
 #[cfg(windows)]
 pub mod webauthn_ext;
