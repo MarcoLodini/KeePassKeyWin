@@ -265,7 +265,7 @@ setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN "C:\KeePassKeyWin\plugin.log"
 After setting (machine scope is most reliable — see Step 6b on env
 inheritance), sign out and back in, then reproduce. The sidecar log
 captures every `tracing::*` event (binding init, UV tier resolution,
-IPC handshake, sig-verify failures); the plugin log captures every
+IPC handshake); the plugin log captures every
 `TraceLogger.WriteLine` site (handshake validation, `[uv-ingest]`,
 `[uv-verify]`, `[sig-verify]`).
 

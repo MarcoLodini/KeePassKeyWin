@@ -184,10 +184,11 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   Honoured on all platforms (the env var lookup is cross-platform; the
   Windows-only effect is on the `LoadLibraryW` symbol that resolves).
 
-**Belt-and-braces**: the sidecar still verifies `pbRequestSignature` server-side
-(`com::request_sig::verify_request_signature`) through Phase 5.UV.2. The
-sidecar-side gate is removed in Phase 5.UV.5 once the plugin-side gate is the
-sole source of truth.
+**Plugin is sole verifier (since 5.UV.2 / 5.UV.5)**: `pbRequestSignature` is verified
+plugin-side (5.UV.2). The sidecar-side gate (`request_sig::verify_request_signature`)
+was removed in 5.UV.5 — the plugin is now the only enforcer for request-signature
+integrity. The sidecar forwards the raw signature bytes as `pbRequestSignatureB64`
+but performs no crypto on them.
 
 **Result shape**: `{ "cbor": "<base64-std of the CTAP2 response>" }` plus
 makeCredential-only metadata fields documented in the C# `VaultHandler`.

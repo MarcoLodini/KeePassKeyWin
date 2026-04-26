@@ -78,9 +78,9 @@ Two plugin-side verification gates protect every `makeCredentialRaw` / `getAsser
 **Gate 1 — `pbRequestSignature` (Phase 5.UV.2+):** Every dispatch carries
 `pbRequestSignatureB64` — Windows' op-signing ECDSA-P256 signature over
 `SHA-256(pbEncodedRequest)`. The plugin verifies this against `OpSignPubKeyCache.Current`
-(populated from the hello handshake's `opSignPublicKeyB64`). The sidecar still verifies
-the same signature server-side as belt-and-braces through 5.UV.2; the sidecar gate is
-removed in 5.UV.5 once the plugin gate is the sole verifier.
+(populated from the hello handshake's `opSignPublicKeyB64`). The plugin is the sole
+verifier since 5.UV.5 removed the sidecar-side gate; the sidecar forwards the raw bytes
+but performs no crypto on them.
 
 **Gate 2 — UV response signature (Phase 5.UV.4+):** Every dispatch also carries
 `uvSignatureB64` (the UV response signature) and `uvBindingTier` (which Windows UV
