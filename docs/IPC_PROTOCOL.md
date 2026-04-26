@@ -169,7 +169,9 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   | Any other value                 | Reject with `-32602 InvalidParams` ("unknown uvBindingTier"). Fail-closed. |
 
   - `"v2_stable"` — `WebAuthNPluginPerformUserVerification2` resolved (stable name;
-    coded for future stabilisation; does not resolve on current 24H2 public headers).
+    coded for future stabilisation; resolves at load time on Win11 24H2 26100.6725+
+    (KB5068861) but returns E_NOTIMPL at call time — the sidecar falls through to v1
+    via the 5.UV.7 call-time fallback and reports `"v1"`).
   - `"v2_experimental"` — `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2`
     resolved. Tier in production on Windows 11 24H2 build 26100.6725+ (KB5068861).
   - `"v1"` — only `WebAuthNPluginPerformUserVerification` resolved (v1 fallback).
