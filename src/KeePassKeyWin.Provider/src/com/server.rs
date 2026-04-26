@@ -369,29 +369,13 @@ pub(crate) mod imp {
         let username_hint = extract_prompt_hint(cbor_bytes, method);
         tracing::debug!("[dispatch] extract_prompt_hint -> \"{username_hint}\"");
 
-        // ── Sig-verify gate (between CBOR extraction and UV) ──────────────────
-        // Verify pbRequestSignature before popping the Windows Hello UV prompt.
-        // This ensures a forged/unauthenticated request cannot cause a UV
-        // dialog to appear or reach the KeePass vault over IPC.
-        //
-        // 5.UV.2: sig bytes are also forwarded to the C# plugin (via the
-        // pbRequestSignatureB64 IPC param below) so the plugin re-verifies
-        // independently. Sidecar gate stays as belt-and-braces; it is removed
-        // in 5.UV.5 once the plugin is the sole verifier.
+        // Forward sig bytes to the plugin for plugin-side verification (5.UV.2/5.UV.5).
         let sig_bytes: &[u8] = if req.cb_request_signature > 0 && !req.pb_request_signature.is_null() {
             unsafe { std::slice::from_raw_parts(req.pb_request_signature, req.cb_request_signature as usize) }
         } else {
             &[]
         };
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig_bytes);
-        {
-            let sig_hr = crate::com::request_sig::verify_request_signature(sig_bytes, cbor_bytes);
-            if sig_hr.is_err() {
-                tracing::warn!("[sig-verify] REJECT {method} hr=0x{:08x}", sig_hr.0 as u32);
-                return HRESULT(sig_hr.0);
-            }
-            dbg_step!("sig-verify OK");
-        }
 
         // UTF-16 owned buffers — kept alive across the UV call.
         let username_w: Vec<u16> = username_hint.encode_utf16().chain(std::iter::once(0)).collect();
@@ -459,8 +443,8 @@ pub(crate) mod imp {
             }
         };
 
-        // 5.UV.2: pbRequestSignatureB64 lets the plugin re-verify the request
-        // signature independently of the sidecar gate.
+        // 5.UV.2/5.UV.5: pbRequestSignatureB64 is verified by the plugin (sole
+        // verifier since 5.UV.5 removed the sidecar-side gate).
         // 5.UV.3: uvSignatureB64 carries the opaque PerformUserVerification(2)
         // response; uvBindingTier records which Windows entrypoint resolved.
         // The plugin logs both in 5.UV.3 and verifies uvSignatureB64 in 5.UV.4.

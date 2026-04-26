@@ -11,12 +11,6 @@ namespace KeePassKeyWin.Core.Security
     /// </para>
     ///
     /// <para>
-    /// <b>Rust analogue</b>: the sidecar-side bypass for request-signature
-    /// verification is <c>KEEPASSKEYWIN_SKIP_REQUEST_SIG_VERIFY</c>, documented in
-    /// <c>src/KeePassKeyWin.Provider/src/com/request_sig.rs</c>.
-    /// </para>
-    ///
-    /// <para>
     /// Each constant names the variable that controls plugin-side verification.
     /// The variables are consumed by the plugin (not the sidecar) and are checked
     /// at the point where the verification would normally occur. A value of
