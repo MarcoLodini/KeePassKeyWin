@@ -383,11 +383,23 @@ are Phase 2.2.
 ### Unattended runbook
 
 ```powershell
-# Default — Rust artifacts expected in the repo-local release dir:
+# Default — Rust artifacts expected in the repo-local release dir.
+# Rebuilds + redeploys the .NET plugin DLL AND repacks/installs the sidecar MSIX.
 .\scripts\validate-phase2.ps1
 
 # WSL cross-compile pattern — build on WSL, validate on Windows:
 .\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\<your-distro>\<path-to-your-checkout>\src\KeePassKeyWin.Provider\target\x86_64-pc-windows-msvc\release'
+
+# Iterate on the sidecar only (skip plugin DLL rebuild — assume the deployed plugin is current):
+.\scripts\validate-phase2.ps1 -SkipPlugin
+
+# Override KeePass install path for the plugin deploy step:
+.\scripts\validate-phase2.ps1 -KeePassDir 'C:\Tools\KeePass'
+
+# Build the plugin in Debug instead of the default Release (Release matches
+# production behaviour — Debug.WriteLine is conditionally compiled out of
+# Release builds, which is why TraceLogger's file route exists at all):
+.\scripts\validate-phase2.ps1 -PluginConfiguration Debug
 ```
 
 The WSL path form works because `build-msix.ps1` copies the DLL + EXE into its
@@ -395,10 +407,18 @@ own temp staging dir before invoking `makeappx` — `\\wsl.localhost\…` is jus
 a regular UNC source path to `Copy-Item`. The actual pack runs entirely on
 Windows-local paths.
 
-The orchestrator runs 5 steps: ensure-dev-cert → winver diag → build-msix →
-sign-msix → install-msix. It prompts once for a PFX password (`SecureString`)
-and propagates it to the cert + signing scripts. Pass `-DryRun` for pre-flight
-only.
+The orchestrator runs 6 steps: ensure-dev-cert → winver diag → **build-plugin**
+→ build-msix → sign-msix → install-msix. The plugin step (Step 3/6, added in
+5.UV.6) delegates to `build-plugin.ps1`: rebuilds `KeePassKeyWin.Core.dll` +
+`KeePassKeyWin.Plugin.dll` and copies them into `<KeePassDir>\Plugins\`.
+Default `-PluginConfiguration` is `Release` — change to `Debug` only for
+local-iteration debugging; live-validation expects Release because
+`TraceLogger`'s file route exists precisely to expose breadcrumbs that are
+otherwise compiled out in Release.
+
+The orchestrator prompts once for a PFX password (`SecureString`) and
+propagates it to the cert + signing scripts. Pass `-DryRun` for pre-flight
+only, or `-SkipPlugin` when iterating purely on the sidecar.
 
 ### Expected PASS criteria
 
