@@ -250,13 +250,26 @@ if ($SkipPlugin) {
     Write-Host "[validate-phase2] Step 3/6 — Build & deploy plugin DLL  [SKIPPED via -SkipPlugin]" -ForegroundColor Yellow
     Write-Host '[validate-phase2] Plugin DLL in KeePass\Plugins\ assumed current — runtime contract mismatch is on you.' -ForegroundColor Yellow
 } else {
+    # Resolve script-scope params BEFORE entering Invoke-Step's scriptblock
+    # so we don't depend on PowerShell 5.1's scope-chain semantics for nested
+    # scriptblocks reading [ValidateSet]-attributed defaults — empirically
+    # $PluginConfiguration evaluated to $null inside the scriptblock body
+    # despite the 'Release' default, which collapsed the splatted args and
+    # made build-plugin.ps1 see "-KeePassDir" as its -Configuration value.
+    # Resolving here pins the values at script scope where they're definitely
+    # bound, then we pass them as ordinary local variables into the block.
+    $pluginCfg = if ([string]::IsNullOrEmpty($PluginConfiguration)) { 'Release' } else { $PluginConfiguration }
+    $pluginKpd = $KeePassDir
     Invoke-Step 3 6 'Build & deploy plugin DLL' {
         $pluginScript = Join-Path $scriptsDir 'build-plugin.ps1'
-        $pluginArgs   = @('-Configuration', $PluginConfiguration)
-        if (-not [string]::IsNullOrEmpty($KeePassDir)) {
-            $pluginArgs += @('-KeePassDir', $KeePassDir)
+        # Use direct named-arg passing (mirroring Step 4's idiom). $script:-
+        # prefixed reads dodge any nested-scope quirks; the values were
+        # already pinned to $pluginCfg / $pluginKpd at script scope above.
+        if ([string]::IsNullOrEmpty($script:pluginKpd)) {
+            & $pluginScript -Configuration $script:pluginCfg
+        } else {
+            & $pluginScript -Configuration $script:pluginCfg -KeePassDir $script:pluginKpd
         }
-        & $pluginScript @pluginArgs
         if ($LASTEXITCODE -ne 0) {
             throw "build-plugin.ps1 exited with code $LASTEXITCODE"
         }
