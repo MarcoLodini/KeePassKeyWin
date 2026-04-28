@@ -344,7 +344,7 @@ pub(crate) mod imp {
         // The extract_prompt_hint line below is logged at debug! (not via this
         // macro) because the username string can contain RP-supplied PII
         // (display name, email-shaped handles); we want it gated behind
-        // RUST_LOG=debug so an admin enabling file logging on a shared/kiosk
+        // KEEPASSKEYWIN_LOG_LEVEL=debug so an admin enabling file logging on a shared/kiosk
         // machine doesn't capture authenticating-user identifiers by default.
         macro_rules! dbg_step { ($($arg:tt)*) => {
             tracing::info!("[dispatch] {}", format_args!($($arg)*))

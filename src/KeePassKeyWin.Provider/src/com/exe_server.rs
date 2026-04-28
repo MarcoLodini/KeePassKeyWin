@@ -830,7 +830,7 @@ pub fn cmd_register() -> Result<(), String> {
         ppwsz_supported_rp_ids:    std::ptr::null(),
     };
 
-    // Dump the full state we're about to pass to webauthn.dll (RUST_LOG=debug to see).
+    // Dump the full state we're about to pass to webauthn.dll (KEEPASSKEYWIN_LOG_LEVEL=debug to see).
     let resolved_symbol = webauthn_ext::resolved_add_symbol_name().unwrap_or("<bindings not loaded>");
     tracing::debug!("[register] ==== diagnostic dump ====");
     tracing::debug!("[register] Resolved symbol: {resolved_symbol}");

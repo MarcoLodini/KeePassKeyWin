@@ -7,6 +7,11 @@
 
 pub mod ctap;
 pub mod ipc;
+// Log-filter directive pre-parser (5.UV.6) — captures per-directive parse
+// warnings into a Vec<String> so they can be re-emitted via tracing::warn!
+// AFTER the subscriber is wired up, instead of via eprintln! to a closed
+// stderr handle. Cross-platform; tests run on Linux CI.
+pub mod log_filter;
 
 // COM module — types always available; implementation Windows-only.
 pub mod com {

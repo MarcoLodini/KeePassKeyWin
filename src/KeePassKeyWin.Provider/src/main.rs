@@ -59,48 +59,122 @@ fn parse_subcommand(s: &str) -> Subcommand {
 // `setx /M`) before activation; tracing will append to that file. CLI
 // subcommands (register/smoke/etc.) inherit the parent console and keep
 // stderr routing when the env var is unset.
-fn init_tracing() {
-    // RUST_LOG is honoured on both routes (file and stderr) via EnvFilter.
-    // The file route is the common debug scenario: a user enabling
-    // KEEPASSKEYWIN_LOG_FILE is already opted-in to structured traces, so the
-    // env filter must apply there too.
-    //
-    // Use `from_env_lossy()` rather than `try_from_default_env().unwrap_or_else`:
-    // the latter collapses NotPresent and ParseError into the same fallback,
-    // silently dropping a typo in the user's RUST_LOG (e.g.,
-    // `keepasskeywin_provicder=debug` — one letter off) and degrading to
-    // INFO with no signal. Lossy parsing keeps every directive it can parse,
-    // emits a warning per invalid one, and applies the default only when
-    // nothing valid remains. Strictly safer for live debugging — which is
-    // the whole point of this patch.
-    let env_filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
-        .from_env_lossy();
+//
+// Verbosity is controlled via `KEEPASSKEYWIN_LOG_LEVEL` (5.UV.6 rename of the
+// previous `RUST_LOG` — same `tracing` directive grammar, but a clearer name
+// for an end-user setx env var). Default INFO; per-directive parse warnings
+// are captured and re-emitted via `tracing::warn!()` AFTER the subscriber is
+// wired up, so a typo is visible in whichever sink (file or stderr) we're
+// using rather than going to a closed stderr handle. See `log_filter::parse`.
+const KKW_LOG_LEVEL_ENV: &str = "KEEPASSKEYWIN_LOG_LEVEL";
 
-    if let Ok(path) = std::env::var("KEEPASSKEYWIN_LOG_FILE") {
-        if !path.trim().is_empty() {
-            if let Ok(file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                fmt()
-                    .with_env_filter(env_filter)
-                    .with_writer(Mutex::new(file))
-                    .with_ansi(false)
-                    .try_init()
-                    .ok();
-                tracing::info!(
-                    "[trace] file logging enabled — KEEPASSKEYWIN_LOG_FILE={path}"
-                );
-                return;
+// Outcome of attempting to initialise the file route. Distinguishes the
+// "user didn't ask for a file" case from "user asked but it failed", so the
+// post-init diagnostic has something to say in the latter case.
+enum FileRouteOutcome {
+    /// File path was empty / unset — stderr route is the intended target.
+    NotRequested,
+    /// File opened and the subscriber was initialised on it.
+    Active { path: String },
+    /// File path was set but open or subscriber-init failed; stderr route
+    /// was wired up as fallback. We carry the error string so the post-init
+    /// `error!` call has the cause to surface.
+    FailedOpen { path: String, error: String },
+    /// Subscriber-init returned Err (a global subscriber was already set).
+    /// The current subscriber is whatever was set previously — *not*
+    /// necessarily a file route.
+    SubscriberAlreadyInstalled { intended_path: Option<String> },
+}
+
+fn init_tracing() {
+    let raw = std::env::var(KKW_LOG_LEVEL_ENV).unwrap_or_default();
+    let keepasskeywin_provider::log_filter::LogFilterParse {
+        good_directives,
+        warnings,
+    } = keepasskeywin_provider::log_filter::parse(&raw, KKW_LOG_LEVEL_ENV);
+
+    // `parse_lossy` on a pre-validated (only good directives) string is
+    // equivalent to `parse(...)` but avoids a `.expect()` on the result —
+    // we already filtered failures into `warnings`, so nothing here can
+    // route through eprintln!.
+    let build_filter = || {
+        tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+            .parse_lossy(&good_directives)
+    };
+
+    let file_path = std::env::var("KEEPASSKEYWIN_LOG_FILE").ok();
+    let outcome = match file_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {
+            match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                Ok(file) => {
+                    let init_result = fmt()
+                        .with_env_filter(build_filter())
+                        .with_writer(Mutex::new(file))
+                        .with_ansi(false)
+                        .try_init();
+                    if init_result.is_ok() {
+                        FileRouteOutcome::Active { path: path.to_string() }
+                    } else {
+                        FileRouteOutcome::SubscriberAlreadyInstalled {
+                            intended_path: Some(path.to_string()),
+                        }
+                    }
+                }
+                Err(e) => {
+                    let init_result = fmt().with_env_filter(build_filter()).try_init();
+                    if init_result.is_ok() {
+                        FileRouteOutcome::FailedOpen {
+                            path: path.to_string(),
+                            error: e.to_string(),
+                        }
+                    } else {
+                        FileRouteOutcome::SubscriberAlreadyInstalled {
+                            intended_path: Some(path.to_string()),
+                        }
+                    }
+                }
             }
         }
+        _ => {
+            let init_result = fmt().with_env_filter(build_filter()).try_init();
+            if init_result.is_ok() {
+                FileRouteOutcome::NotRequested
+            } else {
+                FileRouteOutcome::SubscriberAlreadyInstalled { intended_path: None }
+            }
+        }
+    };
+
+    // Post-init diagnostics through the live subscriber. We use `error!` (not
+    // `warn!`) on the assumption that an operator who silences ERROR-level
+    // logs is asking to fly blind — at which point silencing these too is the
+    // user's call. `error!` also clears any sane env filter; `warn!` could be
+    // dropped by `KEEPASSKEYWIN_LOG_LEVEL=error`.
+    match &outcome {
+        FileRouteOutcome::Active { path } => {
+            tracing::info!("[trace] file logging enabled — KEEPASSKEYWIN_LOG_FILE={path}");
+        }
+        FileRouteOutcome::FailedOpen { path, error } => {
+            tracing::error!(
+                "[trace] failed to open KEEPASSKEYWIN_LOG_FILE={path}: {error} — \
+                 falling back to stderr (closed handle under windows_subsystem=windows)"
+            );
+        }
+        FileRouteOutcome::SubscriberAlreadyInstalled { intended_path } => {
+            tracing::error!(
+                "[trace] tracing subscriber was already installed; init_tracing is a no-op. \
+                 Intended file path: {intended_path:?}. Existing subscriber stays in effect."
+            );
+        }
+        FileRouteOutcome::NotRequested => {}
     }
-    fmt()
-        .with_env_filter(env_filter)
-        .try_init()
-        .ok();
+
+    // Re-emit captured directive-parse warnings through the live subscriber.
+    // `error!` (not `warn!`) so a user silencing WARN does not lose them.
+    for w in warnings {
+        tracing::error!(target: "log_filter", "{w}");
+    }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,0 +1,119 @@
+# Changelog
+
+All notable changes to KeePassKeyWin are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
+adheres to [Semantic Versioning](https://semver.org/) once 1.0 is cut.
+
+KeePassKeyWin is pre-1.0. Until the first tagged release, every change rolls
+into `[Unreleased]`. See `docs/PLAN.md` for the granular live implementation
+log (commits, validation dates, deferred items); this file is the
+human-readable summary aimed at downstream packagers, security reviewers, and
+people upgrading mid-development.
+
+## [Unreleased]
+
+### Security
+
+- **Plugin verifies `pbRequestSignature` over `SHA-256(pbEncodedRequest)`
+  independently** for every `makeCredentialRaw` / `getAssertionRaw` dispatch,
+  using the Windows op-signing public key cached from the IPC handshake
+  (Phase 5.UV.2). Plugin is the **sole verifier** since the sidecar-side gate
+  was removed in 5.UV.5 — see *Removed* below.
+- **Plugin verifies the UV response signature** for v2-tier dispatches against
+  the same op-signing public key, accepting both IEEE P1363 and DER ECDSA-Sig
+  formats (Phase 5.UV.4). For v1-tier dispatches (where the response signature
+  covers no caller-supplied buffer and cannot be verified cryptographically),
+  the plugin shows a once-per-process Yes/No confirmation dialog; cached for
+  the plugin-process lifetime, exception-safe (no sticky-deny on dialog throws).
+- **`opSignPublicKeyB64` is required in the IPC handshake** since 5.UV.4. A
+  hello frame missing or malformed-base64 in this field is rejected with
+  `-32602 InvalidParams` and the connection is terminated. The sidecar
+  returns `Err` from `handshake()` rather than sending hello without the key.
+- **PII gating for plugin-side diagnostic logs** (5.UV.6). Lines that
+  interpolate user-supplied identifiers (RP ID, user name) are tagged
+  `LogTier.Pii` in `KeePassKeyWin.Core.Diagnostics.TraceLogger` and are
+  suppressed unless `KEEPASSKEYWIN_LOG_PLUGIN_PII=1` is set. The two PII
+  gates (plugin / sidecar) are independent and both must be set during
+  diagnosis to capture both sides — see `WINDOWS_VALIDATION.md` § Step 6c.
+
+### Added
+
+- IPC field `pbRequestSignatureB64` on `makeCredentialRaw` / `getAssertionRaw`
+  carrying the raw `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature`
+  bytes (Phase 5.UV.2). Plugin-side verification gate documented in
+  `docs/IPC_PROTOCOL.md` and `docs/ARCHITECTURE.md`.
+- IPC fields `uvSignatureB64` (the opaque
+  `WebAuthNPluginPerformUserVerification(2)` response) and `uvBindingTier`
+  (`"v2_stable" | "v2_experimental" | "v1"`, controls which gate branch
+  runs) on `makeCredentialRaw` / `getAssertionRaw` (Phase 5.UV.3 / 5.UV.4).
+- `UvFallbackPrompt` Core class with cached-decision latch for v1-tier UV
+  dispatches (Phase 5.UV.4). Concurrent v1 dispatches block on the first
+  decision; the latch only closes on a real Yes/No (exceptions release it
+  unlatched so the next operation re-asks).
+- `EcdsaVerifier.VerifyAcceptingEitherFormat` — verifies an ECDSA-P256
+  signature in either IEEE P1363 (64-byte) or DER `ECDSA-Sig-Value` form,
+  for robustness against Windows API format drift between
+  `PerformUserVerification` versions (Phase 5.UV.4).
+- Sidecar `tracing-subscriber::EnvFilter` integration (Phase 5.UV.4.5).
+  `KEEPASSKEYWIN_LOG_LEVEL` (renamed from `RUST_LOG` in 5.UV.6 — see
+  *Changed*) is honoured on both the file route (`KEEPASSKEYWIN_LOG_FILE`)
+  and the stderr route. Per-activation / per-dispatch breadcrumbs survive
+  the default `info` filter.
+- Sidecar log-filter parse warnings are now captured to the live tracing
+  sink (Phase 5.UV.6). A typo in `KEEPASSKEYWIN_LOG_LEVEL` keeps every
+  parseable directive (lossy semantics) and emits a `WARN log_filter:
+  KEEPASSKEYWIN_LOG_LEVEL: rejected directive "<bad>": <error>` line into
+  the file route, instead of the closed stderr handle the
+  `windows_subsystem = "windows"` build inherits during COM activation.
+- `docs/SECURITY.md` § "Trust model" — explicit call-out of what the
+  plugin verifies independently vs sources from the sidecar (Phase 5.UV.6).
+- `docs/ARCHITECTURE.md` § "Trust boundaries and signature verification"
+  — fuller treatment of both gates, op-sign-pubkey provenance, and the
+  5.UV.5 / 5.UV.7 trade-offs (Phase 5.UV.6).
+
+### Changed
+
+- **Sidecar log-filter env var renamed** `RUST_LOG` → `KEEPASSKEYWIN_LOG_LEVEL`
+  (Phase 5.UV.6). Same `tracing` directive grammar; new name is unambiguous in
+  `Get-ChildItem Env:KEEPASSKEYWIN_*` dumps. No back-compat alias — pre-1.0
+  software, single user. Migration: `setx /M RUST_LOG ""` and re-set under
+  the new name.
+- Sidecar swapped `WebAuthNPluginPerformUserVerification` (v1) for the
+  experimental v2 entrypoint where available
+  (`EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` →
+  `WebAuthNPluginPerformUserVerification2`), with load-time triple-fallback
+  to v1 on Windows builds where v2 is not exported (Phase 5.UV.3).
+- Plugin-side PII-bearing breadcrumbs in `VaultHandler` (`rpId`, `userName`)
+  refactored from a single Info-level line to an Info line (no PII) plus a
+  Debug-level line (PII) gated by `KEEPASSKEYWIN_LOG_PLUGIN_PII` (Phase 5.UV.6).
+
+### Removed
+
+- **Sidecar-side `verify_request_signature` gate** (Phase 5.UV.5). Deleted
+  the `verify_with_ncrypt`, `is_bypass_enabled`, and `verify_request_signature`
+  functions and all four sidecar-side verify tests from
+  `src/com/request_sig.rs`. The plugin is now the only enforcer for
+  request-signature integrity. A latent NCryptVerifySignature bug observed
+  in pre-5.UV.5 diagnostics and a `register`-time keypair-desync race are
+  both moot — the gate that exposed them is gone.
+- **Sidecar-side `KEEPASSKEYWIN_SKIP_REQUEST_SIG_VERIFY` env var** retired
+  (Phase 5.UV.5). The emergency bypass is `KEEPASSKEYWIN_SKIP_PLUGIN_SIG_VERIFY=1`
+  (plugin-side, dev-only).
+- Dead source file `src/KeePassKeyWin.Provider/src/com/mod.rs` deleted (Phase
+  5.UV.6). The canonical `com` module has been declared inline in
+  `src/lib.rs` via `pub mod com { ... }` since the early sidecar work; the
+  `mod.rs` was silently ignored by the Rust resolver.
+
+### Fixed
+
+- **Call-time v2 → v1 fallback on `E_NOTIMPL`** (Phase 5.UV.7). On Windows 11
+  24H2 build 26100.6725+ (KB5068861), `WebAuthNPluginPerformUserVerification2`
+  resolves at load time but is a forward-declared stub returning `E_NOTIMPL`.
+  The 5.UV.3 load-time triple-fallback was insufficient — picking the
+  resolved stable name committed us to a doomed call. The sidecar now caches
+  an `AtomicBool` per process, sets it on the first `E_NOTIMPL`, and
+  short-circuits the v2 attempt for all subsequent dispatches in that
+  process, falling through to v1 in the same dispatch. Only `E_NOTIMPL`
+  poisons the cache (`E_ABORT`, `E_FAIL`, `E_INVALIDARG` leave it false).
+  Cache is per-process — a future Windows update shipping the real v2 is
+  adopted automatically on next COM activation.

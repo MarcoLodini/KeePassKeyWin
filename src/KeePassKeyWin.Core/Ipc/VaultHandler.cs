@@ -250,7 +250,8 @@ namespace KeePassKeyWin.Core.Ipc
                     "keepasskeywin.getAssertionRaw: malformed CBOR: " + ex.Message);
             }
 
-            TraceLogger.WriteLine($"[getAssert] ENTRY clientDataHash_len={req.ClientDataHash.Length} rpId={req.RpId} allowList_count={req.AllowListCredIds.Count}");
+            TraceLogger.WriteLine($"[getAssert] ENTRY clientDataHash_len={req.ClientDataHash.Length} allowList_count={req.AllowListCredIds.Count}");
+            TraceLogger.WriteLine($"[getAssert] ENTRY rpId={req.RpId}", LogTier.Pii);
 
             // options.up=false is forbidden by our v1 (we always require user presence).
             if (!req.OptionsUp)
@@ -271,7 +272,8 @@ namespace KeePassKeyWin.Core.Ipc
                 var candidates = _store.FindByRpId(req.RpId);
                 if (candidates.Count == 0)
                 {
-                    TraceLogger.WriteLine($"[getAssert] REJECT discoverable — no credential found for rpId={req.RpId}");
+                    TraceLogger.WriteLine("[getAssert] REJECT discoverable — no credential found");
+                    TraceLogger.WriteLine($"[getAssert] REJECT discoverable rpId={req.RpId}", LogTier.Pii);
                     throw new RpcException(RpcErrorCode.CredentialNotFound,
                         "keepasskeywin.getAssertionRaw: no passkey found for RP '" + req.RpId + "'.");
                 }
@@ -301,7 +303,8 @@ namespace KeePassKeyWin.Core.Ipc
 
             var oldCount = selected.SignCount;
             uint newCount = _store.IncrementSignCount(selected.CredentialId);
-            TraceLogger.WriteLine($"[getAssert] selected credentialId={SafePrefix(selected.CredentialId, 8)} userName={selected.UserName}");
+            TraceLogger.WriteLine($"[getAssert] selected credentialId={SafePrefix(selected.CredentialId, 8)}");
+            TraceLogger.WriteLine($"[getAssert] selected userName={selected.UserName}", LogTier.Pii);
             TraceLogger.WriteLine($"[getAssert] signCount {oldCount} -> {newCount}");
 
             // Build 37-byte assertion authData (no attested credential data).

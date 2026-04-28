@@ -276,7 +276,7 @@ Useful breadcrumbs to grep for:
 - `[handshake]` — hello frame validation.
 
 The following activation/dispatch breadcrumbs are always visible at the default
-INFO level (no `RUST_LOG` change needed):
+INFO level (no `KEEPASSKEYWIN_LOG_LEVEL` change needed):
 
 - `[activate] cf_create_instance session_id={n}` — sidecar woke up for this Windows session
 - `[activate] pipe connect OK | FAILED: {e}` — IPC pipe outcome
@@ -286,31 +286,55 @@ INFO level (no `RUST_LOG` change needed):
 - `[dispatch] UV call ...`, `[dispatch] UV returned hr=0x... cb_response={n} tier={t}` — UV outcome
 - `[dispatch] RPC call ... | RPC returned | DONE ok` — plugin pipeline
 
-#### `RUST_LOG` — controlling trace verbosity (Phase 5.UV.4.5+)
+#### `KEEPASSKEYWIN_LOG_LEVEL` — controlling sidecar trace verbosity (Phase 5.UV.6+)
 
-`RUST_LOG` is now honoured on both the file route and the stderr route. The
-default when `RUST_LOG` is unset is `info`, which captures all the always-on
-breadcrumbs above. Set `RUST_LOG=debug` to additionally see lower-level
-diagnostics — most notably the RP-supplied username hint at dispatch time
-(`[dispatch] extract_prompt_hint -> "..."`), which is otherwise gated behind
-debug-level on PII grounds. Invalid `RUST_LOG` directives are logged and
-skipped (lossy parsing); the rest of the filter still applies.
+> **Renamed in 5.UV.6.** This env var was called `RUST_LOG` in 5.UV.4.5–5.UV.5
+> (the `tracing` crate's default name); the rename to `KEEPASSKEYWIN_LOG_LEVEL`
+> in 5.UV.6 makes the variable scope obvious in `Get-ChildItem Env:KEEPASSKEYWIN_*`
+> dumps. The directive grammar is unchanged. If migrating from a 5.UV.5 install,
+> `setx /M RUST_LOG ""` and re-set the value under the new name.
+
+`KEEPASSKEYWIN_LOG_LEVEL` is honoured on both the file route and the stderr
+route. The default when unset is `info`, which captures all the always-on
+breadcrumbs above. Set `KEEPASSKEYWIN_LOG_LEVEL=debug` to additionally see
+lower-level diagnostics — most notably the RP-supplied username hint at
+dispatch time (`[dispatch] extract_prompt_hint -> "..."`), which is otherwise
+gated behind debug-level on PII grounds.
+
+Invalid directives are captured and re-emitted via `tracing::warn!` (5.UV.6+),
+so a typo lands in the file route alongside the rest of the trace rather than
+in a closed stderr handle. Look for `WARN log_filter:
+KEEPASSKEYWIN_LOG_LEVEL: rejected directive "<bad-part>": <error>`.
 
 ```powershell
-setx /M RUST_LOG "debug"                              # everything (verbose)
-setx /M RUST_LOG "info"                               # default (always-on breadcrumbs)
-setx /M RUST_LOG "keepasskeywin_provider=debug,info"  # only this crate at debug, others at info
+setx /M KEEPASSKEYWIN_LOG_LEVEL "debug"                              # everything (verbose)
+setx /M KEEPASSKEYWIN_LOG_LEVEL "info"                               # default (always-on breadcrumbs)
+setx /M KEEPASSKEYWIN_LOG_LEVEL "keepasskeywin_provider=debug,info"  # only this crate at debug, others at info
 ```
 
 After setting, propagate the env var (sign out/in, or reinstall MSIX and
 restart KeePass — see Step 6b).
 
+#### `KEEPASSKEYWIN_LOG_PLUGIN_PII` — plugin PII gate (Phase 5.UV.6+)
+
+The plugin's `TraceLogger` writes Info-level breadcrumbs unconditionally to
+`KEEPASSKEYWIN_LOG_FILE_PLUGIN` when set. A small number of breadcrumbs that
+interpolate user-supplied identifiers (RP ID, user name) are tagged
+`LogTier.Pii` and suppressed unless `KEEPASSKEYWIN_LOG_PLUGIN_PII=1` (or
+`true` / `yes`, case-insensitive) is also set. Mirrors the sidecar's PII
+posture: identifying strings only appear in logs when the operator opts in.
+
+```powershell
+setx /M KEEPASSKEYWIN_LOG_PLUGIN_PII "1"
+```
+
 Unset when done:
 
 ```powershell
-setx /M KEEPASSKEYWIN_LOG_FILE        ""
-setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN ""
-setx /M RUST_LOG                      ""
+setx /M KEEPASSKEYWIN_LOG_FILE         ""
+setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN  ""
+setx /M KEEPASSKEYWIN_LOG_LEVEL        ""
+setx /M KEEPASSKEYWIN_LOG_PLUGIN_PII   ""
 ```
 
 ---
