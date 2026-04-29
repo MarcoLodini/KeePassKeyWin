@@ -70,6 +70,22 @@ people upgrading mid-development.
 - `docs/ARCHITECTURE.md` § "Trust boundaries and signature verification"
   — fuller treatment of both gates, op-sign-pubkey provenance, and the
   5.UV.5 / 5.UV.7 trade-offs (Phase 5.UV.6).
+- **CI: Windows-target compile + clippy gates** (Phase 5.UV.9.7, also
+  closes the 5.UV.9.5 tail). New `windows-cross` job in
+  `.github/workflows/ci.yml` runs `cargo xwin clippy --target
+  x86_64-pc-windows-msvc --release --all-targets -- -D warnings`
+  followed by `cargo xwin test --no-run --target
+  x86_64-pc-windows-msvc --all-targets` on the Ubuntu runner. The test
+  step uses `--no-run` (no Windows runner is available) — the goal is
+  to catch the class of regression that hid the `coset` dev-dep gap in
+  the `make_credential_cbor` `#[cfg(windows)] + #[cfg(test)]` fixture
+  for years (Linux CI cfg's it out; `cargo xwin build` doesn't compile
+  tests). The clippy step makes the Windows-target lint hygiene that
+  5.UV.9.5 just stabilised a permanent gate. Job uses
+  `taiki-e/install-action` for cargo-xwin (prebuilt binary), pins
+  `XWIN_ACCEPT_LICENSE=1` for non-interactive MSVC SDK EULA, and caches
+  `~/.cache/cargo-xwin` (~600MB SDK download) separately from
+  `target/` so the cold-start cost is paid once.
 
 ### Changed
 

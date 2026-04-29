@@ -49,3 +49,52 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
+
+  windows-cross:
+    name: Rust Windows-target gates (Linux cross-compile)
+    runs-on: ubuntu-latest
+    env:
+      # Required by cargo-xwin to non-interactively accept the Microsoft
+      # MSVC SDK EULA on first SDK fetch. Without this, the first
+      # invocation in a cold runner prompts for license acceptance and
+      # the job hangs / fails.
+      XWIN_ACCEPT_LICENSE: "1"
+    defaults:
+      run:
+        working-directory: src/KeePassKeyWin.Provider
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust stable + Windows target + clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Install LLVM cross toolchain (clang + lld)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang lld
+
+      - name: Install cargo-xwin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
+
+      - name: Cache cargo artifacts (Windows target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/KeePassKeyWin.Provider
+          key: windows-cross
+
+      - name: Cache xwin MSVC SDK download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cargo-xwin
+          # Bump the suffix to invalidate the cache (e.g. on cargo-xwin
+          # major version bump that re-pins the SDK manifest).
+          key: xwin-sdk-v1
+
+      - name: Clippy (Windows target, deny warnings)
+        run: cargo xwin clippy --target x86_64-pc-windows-msvc --release --all-targets -- -D warnings
+
+      - name: Test compile (Windows target, --no-run)
+        run: cargo xwin test --no-run --target x86_64-pc-windows-msvc --all-targets
