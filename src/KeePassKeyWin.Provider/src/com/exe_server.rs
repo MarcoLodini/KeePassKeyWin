@@ -250,13 +250,19 @@ pub(crate) mod imp {
 
     /// Read the current handshake nonce from
     /// `HKCU\Software\KeePassKeyWin\HandshakeNonce`. The plugin writes it on
-    /// startup and rotates on each successful consume. Returns `None` on
-    /// any error (missing key, wrong type, registry failure) — the caller
-    /// treats a missing nonce the same as a handshake failure.
-    pub(crate) fn read_handshake_nonce() -> Option<String> {
+    /// startup and rotates on each successful consume.
+    ///
+    /// Returns `Ok(nonce_string)` on success or a [`crate::com::reg_read_error::RegReadError`]
+    /// variant that faithfully describes the failure reason so `connect_and_handshake`
+    /// can emit a precise log message and error (5.UV.9). Uses `RRF_RT_ANY`
+    /// (no built-in type filter) so the value-type out-param is populated even
+    /// when `RegGetValueW` succeeds — enabling `WrongType` detection without a
+    /// second registry call.
+    pub(crate) fn read_handshake_nonce() -> Result<String, crate::com::reg_read_error::RegReadError> {
+        use crate::com::reg_read_error::{lstatus_to_reg_read_error, RegReadError};
         use windows::core::PCWSTR;
         use windows::Win32::System::Registry::{
-            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ,
+            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_ANY, REG_VALUE_TYPE, REG_SZ,
         };
 
         let sub_key: Vec<u16>    = "Software\\KeePassKeyWin\0".encode_utf16().collect();
@@ -265,25 +271,37 @@ pub(crate) mod imp {
         // Nonce is 64 hex chars + null = 130 bytes. 512 is plenty.
         let mut buf: [u16; 256] = [0u16; 256];
         let mut cb: u32 = (buf.len() * 2) as u32;
+        // Capture the actual REG type so we can detect wrong-type on success.
+        // Using RRF_RT_ANY (no built-in filter) ensures pdwType is populated
+        // regardless of the actual type; we verify REG_SZ ourselves below.
+        let mut actual_type = REG_VALUE_TYPE(0u32);
 
         let status = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 PCWSTR(sub_key.as_ptr()),
                 PCWSTR(value_name.as_ptr()),
-                RRF_RT_REG_SZ,
-                None,
+                RRF_RT_ANY,
+                Some(&mut actual_type),
                 Some(buf.as_mut_ptr() as *mut _),
                 Some(&mut cb),
             )
         };
+
         if status.is_err() {
-            return None;
+            // status.0 is the raw WIN32_ERROR u32; cast to i32 for the mapper.
+            return Err(lstatus_to_reg_read_error(status.0 as i32, None));
         }
+
+        // Read succeeded but we must verify the type ourselves (RRF_RT_ANY).
+        if actual_type != REG_SZ {
+            return Err(RegReadError::WrongType { actual_type: actual_type.0 });
+        }
+
         // cb is bytes written including the trailing UTF-16 null.
         let wchars = (cb as usize) / 2;
         let end = buf[..wchars].iter().position(|&c| c == 0).unwrap_or(wchars);
-        String::from_utf16(&buf[..end]).ok()
+        String::from_utf16(&buf[..end]).map_err(|_| RegReadError::Other(0))
     }
 
     /// Connect the plugin pipe and complete the `keepasskeywin.hello`
@@ -329,7 +347,7 @@ pub(crate) mod imp {
         };
 
         let nonce = match read_handshake_nonce() {
-            Some(n) => {
+            Ok(n) => {
                 let prefix: String = n.chars().take(8).collect();
                 tracing::info!(
                     "{log_prefix} read nonce from HKCU: \"{prefix}...\" ({} chars)",
@@ -337,17 +355,30 @@ pub(crate) mod imp {
                 );
                 n
             }
-            None => {
-                // `read_handshake_nonce` returns `None` for any registry
-                // failure (key absent, wrong type, ACL deny, corruption) —
-                // the message says "missing" but a richer error type that
-                // disambiguates these is queued as a 5.UV.8 follow-up.
-                tracing::info!(
-                    "{log_prefix} read nonce FAILED — HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing"
-                );
-                return Err(ClientError::InvalidRequest(
-                    "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing".to_string(),
-                ));
+            Err(e) => {
+                use crate::com::reg_read_error::RegReadError;
+                // 5.UV.9: map each variant to a faithful message so the log
+                // line and error string accurately describe the root cause.
+                let reason = match &e {
+                    RegReadError::NotFound =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce not found".to_string(),
+                    RegReadError::WrongType { actual_type } =>
+                        format!(
+                            "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce wrong value type \
+                             0x{actual_type:x} (expected REG_SZ 0x1)"
+                        ),
+                    RegReadError::AccessDenied =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce access denied".to_string(),
+                    RegReadError::BufferTooSmall =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce buffer too small".to_string(),
+                    RegReadError::Other(code) =>
+                        format!(
+                            "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce LSTATUS 0x{:08x}",
+                            *code as u32
+                        ),
+                };
+                tracing::info!("{log_prefix} read nonce FAILED — {reason}");
+                return Err(ClientError::InvalidRequest(reason));
             }
         };
 

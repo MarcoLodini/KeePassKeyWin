@@ -51,6 +51,10 @@ pub mod com {
     // Cross-platform (tests run on Linux). Imported by server::take_call_with_retry
     // and exe_server::clear_shared_state.
     pub mod classify_rpc_error;
+    // 5.UV.9 faithful registry-error enum + pure LSTATUS→RegReadError mapper.
+    // Cross-platform (tests run on Linux). Imported by exe_server::read_handshake_nonce
+    // and exe_server::connect_and_handshake.
+    pub mod reg_read_error;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;
