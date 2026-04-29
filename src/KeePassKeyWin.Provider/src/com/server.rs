@@ -521,7 +521,7 @@ pub(crate) mod imp {
         let mut pb_uv_response: *mut u8 = std::ptr::null_mut();
 
         dbg_step!("UV call ...");
-        let (uv_hr, uv_tier) = match webauthn_ext::perform_user_verification_2(
+        let (uv_hr, uv_tier) = match unsafe { webauthn_ext::perform_user_verification_2(
             req.hwnd,
             &req.transaction_id as *const _,
             username_w.as_ptr(),
@@ -529,7 +529,7 @@ pub(crate) mod imp {
             buffer_to_sign.as_slice(),
             &mut cb_uv_response,
             &mut pb_uv_response,
-        ) {
+        ) } {
             Ok(pair) => pair,
             Err(e) => {
                 dbg_step!("UV bindings FAILED: {e}");
@@ -548,7 +548,9 @@ pub(crate) mod imp {
         };
 
         // Free the UV response on EVERY exit path from here on.
-        webauthn_ext::free_user_verification_response(pb_uv_response);
+        // SAFETY: pb_uv_response is either null (no-op) or the pointer written
+        // by perform_user_verification_2 from the Windows runtime allocation.
+        unsafe { webauthn_ext::free_user_verification_response(pb_uv_response) };
 
         if uv_hr.0 as u32 == E_ABORT {
             dbg_step!("UV cancelled by user, returning E_ABORT");
@@ -755,11 +757,10 @@ mod prompt_hint_tests {
         use passkey_types::{
             ctap2::make_credential::Request,
             Bytes,
-            webauthn::{PublicKeyCredentialUserEntity, PublicKeyCredentialRpEntity,
-                        PublicKeyCredentialParameters, PublicKeyCredentialType},
+            webauthn::{PublicKeyCredentialUserEntity,
+                        PublicKeyCredentialParameters},
         };
         use passkey_types::ctap2::make_credential::PublicKeyCredentialRpEntity as CtapRpEntity;
-        use coset::iana::Algorithm;
 
         let req = Request {
             client_data_hash: Bytes::from(vec![0u8; 32]),
@@ -772,10 +773,7 @@ mod prompt_hint_tests {
                 name: user_name.to_string(),
                 display_name: "Test User".to_string(),
             },
-            pub_key_cred_params: vec![PublicKeyCredentialParameters {
-                ty: PublicKeyCredentialType::PublicKey,
-                alg: coset::iana::Algorithm::ES256,
-            }],
+            pub_key_cred_params: PublicKeyCredentialParameters::default_algorithms(),
             exclude_list: None,
             extensions: None,
             options: Default::default(),

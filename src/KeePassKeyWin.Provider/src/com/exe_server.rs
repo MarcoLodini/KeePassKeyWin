@@ -512,7 +512,7 @@ pub(crate) mod imp {
                 Err(_) => { skipped_parse += 1; continue; }
             };
 
-            if os_ids.iter().any(|id| *id == cred_id_bytes) {
+            if os_ids.contains(&cred_id_bytes) {
                 continue; // already known to OS
             }
 
@@ -573,9 +573,9 @@ pub(crate) mod imp {
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()
             }).collect();
 
-            for i in 0..os_count as usize {
-                if os_ids[i].is_empty() { continue; }
-                if vault_ids.iter().any(|id| *id == os_ids[i]) {
+            for (i, os_id) in os_ids.iter().enumerate() {
+                if os_id.is_empty() { continue; }
+                if vault_ids.contains(os_id) {
                     continue; // still in vault
                 }
 
@@ -943,12 +943,16 @@ pub fn cmd_register() -> Result<(), String> {
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
         = std::ptr::null_mut();
 
-    let hr = webauthn_ext::add_authenticator(&opts, &mut response_ptr)?;
+    // SAFETY: response_ptr is initialized to null_mut() above; Windows writes
+    // the response pointer on S_OK. We free it immediately after via
+    // free_add_authenticator_response (which is a no-op on null).
+    let hr = unsafe { webauthn_ext::add_authenticator(&opts, &mut response_ptr) }?;
 
     // Free the response BEFORE error-handling so the op-signing key is
     // never leaked, even on partial-success HRESULTs.
     // free_add_authenticator_response is a no-op on null.
-    webauthn_ext::free_add_authenticator_response(response_ptr);
+    // SAFETY: response_ptr is either null or the pointer written by add_authenticator.
+    unsafe { webauthn_ext::free_add_authenticator_response(response_ptr) };
 
     if hr.0 as u32 == HR_NTE_EXISTS {
         tracing::info!(
@@ -957,12 +961,15 @@ pub fn cmd_register() -> Result<(), String> {
 
         // Best-effort unregister. If it fails (shouldn't), the retry will
         // surface the real error code.
-        let _ = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _);
+        // SAFETY: &CLSID_GUID is a valid non-null pointer to the registered CLSID.
+        let _ = unsafe { webauthn_ext::remove_authenticator(&CLSID_GUID as *const _) };
 
         let mut retry_response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
             = std::ptr::null_mut();
-        let hr_retry = webauthn_ext::add_authenticator(&opts, &mut retry_response_ptr)?;
-        webauthn_ext::free_add_authenticator_response(retry_response_ptr);
+        // SAFETY: retry_response_ptr initialized to null_mut(); freed immediately below.
+        let hr_retry = unsafe { webauthn_ext::add_authenticator(&opts, &mut retry_response_ptr) }?;
+        // SAFETY: retry_response_ptr is either null or the pointer written by add_authenticator.
+        unsafe { webauthn_ext::free_add_authenticator_response(retry_response_ptr) };
 
         if hr_retry.is_err() {
             return Err(format!(
@@ -1005,7 +1012,8 @@ pub fn cmd_unregister() -> Result<(), String> {
     const HR_NOT_FOUND:      u32 = 0x8007_0490;
     const HR_FILE_NOT_FOUND: u32 = 0x8007_0002;
 
-    let hr = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _)?;
+    // SAFETY: &CLSID_GUID is a valid non-null pointer to our registered CLSID.
+    let hr = unsafe { webauthn_ext::remove_authenticator(&CLSID_GUID as *const _) }?;
 
     match hr.0 as u32 {
         0 => {

@@ -174,7 +174,7 @@ mod win_bindings {
     fn resolve_get_key(hmod: HMODULE) -> Result<GetKeyVariant, String> {
         // Try stable name first.
         if let Some(p) = unsafe {
-            GetProcAddress(hmod, PCSTR(b"WebAuthNPluginGetOperationSigningPublicKey\0".as_ptr()))
+            GetProcAddress(hmod, PCSTR(c"WebAuthNPluginGetOperationSigningPublicKey".as_ptr().cast::<u8>()))
         } {
             let f = unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnGetKeyRefclsid>(p)
@@ -184,7 +184,7 @@ mod win_bindings {
         }
         // Try EXPERIMENTAL2 (also REFCLSID).
         if let Some(p) = unsafe {
-            GetProcAddress(hmod, PCSTR(b"EXPERIMENTAL2_WebAuthNPluginGetOperationSigningPublicKey\0".as_ptr()))
+            GetProcAddress(hmod, PCSTR(c"EXPERIMENTAL2_WebAuthNPluginGetOperationSigningPublicKey".as_ptr().cast::<u8>()))
         } {
             let f = unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnGetKeyRefclsid>(p)
@@ -194,7 +194,7 @@ mod win_bindings {
         }
         // Try EXPERIMENTAL_ (PWSTR variant).
         if let Some(p) = unsafe {
-            GetProcAddress(hmod, PCSTR(b"EXPERIMENTAL_WebAuthNPluginGetOperationSigningPublicKey\0".as_ptr()))
+            GetProcAddress(hmod, PCSTR(c"EXPERIMENTAL_WebAuthNPluginGetOperationSigningPublicKey".as_ptr().cast::<u8>()))
         } {
             let f = unsafe {
                 std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnGetKeyPwstr>(p)
@@ -212,7 +212,7 @@ mod win_bindings {
 
     fn probe_free_key(hmod: HMODULE) -> Option<PfnFreeKey> {
         unsafe {
-            GetProcAddress(hmod, PCSTR(b"WebAuthNPluginFreePublicKeyResponse\0".as_ptr()))
+            GetProcAddress(hmod, PCSTR(c"WebAuthNPluginFreePublicKeyResponse".as_ptr().cast::<u8>()))
         }.map(|p| unsafe {
             std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnFreeKey>(p)
         })

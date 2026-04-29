@@ -274,14 +274,14 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
         ])?;
 
         Ok(WebauthnBindings {
-            add:              unsafe { std::mem::transmute::<_, PfnAdd>(add) },
-            remove:           unsafe { std::mem::transmute::<_, PfnRemove>(rem) },
-            free_response:    unsafe { std::mem::transmute::<_, PfnFreeResponse>(free) },
-            perform_uv:       unsafe { std::mem::transmute::<_, PfnPerformUv>(perform_uv_raw) },
-            perform_uv_v2:    perform_uv_v2_raw.map(|p| unsafe { std::mem::transmute::<_, PfnPerformUv2>(p) }),
+            add:              unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnAdd>(add) },
+            remove:           unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnRemove>(rem) },
+            free_response:    unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnFreeResponse>(free) },
+            perform_uv:       unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnPerformUv>(perform_uv_raw) },
+            perform_uv_v2:    perform_uv_v2_raw.map(|p| unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnPerformUv2>(p) }),
             perform_uv_tier,
             v2_unimplemented: AtomicBool::new(false),
-            free_uv_response: unsafe { std::mem::transmute::<_, PfnFreeUvResponse>(free_uv) },
+            free_uv_response: unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnFreeUvResponse>(free_uv) },
             add_symbol_name:  add_name,
             perform_uv_symbol_name: uv2_name,
         })
@@ -350,7 +350,14 @@ fn get_proc(
 
 /// Call `EXPERIMENTAL_WebAuthNPluginAddAuthenticator`. On S_OK the caller
 /// must free `*pp_response` via [`free_add_authenticator_response`].
-pub fn add_authenticator(
+///
+/// # Safety
+/// - `pp_response` must be a valid, non-null pointer to a `*mut
+///   WebauthnPluginAddAuthenticatorResponse`. The pointed-to pointer is written
+///   by Windows on S_OK; the caller must free it via
+///   [`free_add_authenticator_response`] on every exit path (null is a no-op).
+/// - `opts` borrow must outlive the FFI call (synchronous — no concern in practice).
+pub unsafe fn add_authenticator(
     opts: &WebauthnPluginAddAuthenticatorOptions,
     pp_response: *mut *mut WebauthnPluginAddAuthenticatorResponse,
 ) -> Result<HRESULT, String> {
@@ -360,14 +367,26 @@ pub fn add_authenticator(
 
 /// Call `WebAuthNPluginRemoveAuthenticator` with a pointer to the CLSID
 /// GUID (REFCLSID).
-pub fn remove_authenticator(rclsid: *const Guid) -> Result<HRESULT, String> {
+///
+/// # Safety
+/// - `rclsid` must be a valid, non-null pointer to a `Guid` (CLSID). The
+///   pointer is read by Windows during the call and must remain valid for its
+///   duration. Passing a null or dangling pointer is undefined behaviour.
+pub unsafe fn remove_authenticator(rclsid: *const Guid) -> Result<HRESULT, String> {
     let b = bindings().map_err(|s| s.to_string())?;
     Ok(unsafe { (b.remove)(rclsid) })
 }
 
 /// Call `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. Safe to
 /// call on a null pointer (skips the FFI call).
-pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthenticatorResponse) {
+///
+/// # Safety
+/// - `p_response` must either be null (no-op) or a pointer returned by a prior
+///   successful call to [`add_authenticator`] (i.e. the value written into
+///   `*pp_response` when `add_authenticator` returned `S_OK`). Passing any
+///   other pointer is undefined behaviour. The pointer must not be used again
+///   after this call.
+pub unsafe fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthenticatorResponse) {
     if p_response.is_null() {
         return;
     }
@@ -422,7 +441,21 @@ use crate::com::uv_fallback::{observe_v2_result, should_fallback_to_v1};
 /// the binding propagates the error code. The caller **MUST** free
 /// `*pp_response` via [`free_user_verification_response`] on every exit path
 /// after a successful call (non-null `*pp_response`).
-pub fn perform_user_verification_2(
+///
+/// # Safety
+/// - `p_txid` must be a valid, non-null pointer to a `Guid` (REFGUID). It is
+///   read by Windows during the synchronous UV call and must remain valid for
+///   the call's duration. Passing an inline GUID (not a pointer) shifts every
+///   subsequent struct field, causing `STATUS_ACCESS_VIOLATION`.
+/// - `pwsz_user` and `pwsz_hint`, when non-null, must point to valid
+///   null-terminated UTF-16 strings that remain live for the duration of the call.
+///   Null is accepted by the Windows runtime (displayed as empty).
+/// - `cb_response` and `pp_response` must be valid, non-null, writable pointers.
+///   On return, `*pp_response` (when non-null) must be freed via
+///   [`free_user_verification_response`].
+/// - `buffer_to_sign` must remain valid for the duration of the call (it is
+///   referenced only via the `pb_buffer_to_sign` field in the on-stack struct).
+pub unsafe fn perform_user_verification_2(
     hwnd:            isize,
     p_txid:          *const Guid,
     pwsz_user:       *const u16,
@@ -523,7 +556,13 @@ fn invoke_v1(
 /// `PerformUserVerification`. Safe to call on a null pointer.
 /// Should be called on EVERY exit path after a successful UV invocation —
 /// including error paths where the UV response is discarded.
-pub fn free_user_verification_response(pb_response: *mut u8) {
+///
+/// # Safety
+/// - `pb_response` must either be null (no-op) or a pointer obtained from
+///   `*pp_response` after a successful call to [`perform_user_verification_2`].
+///   Passing any other pointer (including a stale/double-freed pointer) is
+///   undefined behaviour. After this call the pointer must not be used again.
+pub unsafe fn free_user_verification_response(pb_response: *mut u8) {
     if pb_response.is_null() {
         return;
     }
