@@ -33,6 +33,16 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 base64 = "0.22"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 
+# 5.UV.9.5: only used by `make_credential_cbor` in `prompt_hint_tests` (a
+# #[cfg(windows)] test fixture). `coset` is already a transitive dep via
+# `passkey-types`, but Rust 2018+ requires direct `[dependencies]` entries
+# for `use coset::*`. Pinned to `^0.3` to match the resolved 0.3.8 in
+# `Cargo.lock`. This eliminates the on-Windows lib-test compile error that
+# was hidden because Linux CI runs `cargo test --target=<host>` (cfgs out
+# the fixture) and `cargo xwin build` doesn't compile tests.
+[dev-dependencies]
+coset = "0.3"
+
 # Phase 2b: windows-rs COM bindings — Windows only.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

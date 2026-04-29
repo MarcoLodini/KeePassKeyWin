@@ -758,7 +758,7 @@ mod prompt_hint_tests {
             ctap2::make_credential::Request,
             Bytes,
             webauthn::{PublicKeyCredentialUserEntity,
-                        PublicKeyCredentialParameters},
+                        PublicKeyCredentialParameters, PublicKeyCredentialType},
         };
         use passkey_types::ctap2::make_credential::PublicKeyCredentialRpEntity as CtapRpEntity;
 
@@ -773,7 +773,15 @@ mod prompt_hint_tests {
                 name: user_name.to_string(),
                 display_name: "Test User".to_string(),
             },
-            pub_key_cred_params: PublicKeyCredentialParameters::default_algorithms(),
+            // Single-element [ES256] preserves the pre-5.UV.9.5 fixture surface.
+            // `default_algorithms()` returns [ES256, RS256] which would broaden the
+            // CBOR payload; the fully-qualified `coset::iana::Algorithm::ES256` path
+            // works via passkey-types' re-export without a `use` (which would
+            // re-introduce the unused-import warning master had pre-5.UV.9.5).
+            pub_key_cred_params: vec![PublicKeyCredentialParameters {
+                ty: PublicKeyCredentialType::PublicKey,
+                alg: coset::iana::Algorithm::ES256,
+            }],
             exclude_list: None,
             extensions: None,
             options: Default::default(),

@@ -352,11 +352,23 @@ fn get_proc(
 /// must free `*pp_response` via [`free_add_authenticator_response`].
 ///
 /// # Safety
-/// - `pp_response` must be a valid, non-null pointer to a `*mut
-///   WebauthnPluginAddAuthenticatorResponse`. The pointed-to pointer is written
-///   by Windows on S_OK; the caller must free it via
-///   [`free_add_authenticator_response`] on every exit path (null is a no-op).
-/// - `opts` borrow must outlive the FFI call (synchronous — no concern in practice).
+/// - `pp_response` must be a valid, non-null pointer to writable
+///   `*mut WebauthnPluginAddAuthenticatorResponse` storage. On `S_OK`, Windows
+///   writes a heap-allocated response into `*pp_response`; the caller must free
+///   it via [`free_add_authenticator_response`] on every exit path (null is a
+///   no-op).
+/// - Every pointer field inside `opts` must be valid for the duration of the
+///   call. In particular: `opts.rclsid` is `REFCLSID` — a *pointer* to a valid
+///   `Guid`, NOT an inline GUID value. Passing inline GUID bytes shifts every
+///   subsequent struct field by +8 bytes, causing `STATUS_ACCESS_VIOLATION`
+///   in `webauthn.dll` (same trap as `perform_user_verification_2`'s `p_txid`;
+///   see `types.rs:140-205`). `opts.pwsz_authenticator_name`,
+///   `opts.pwsz_plugin_rp_id`, `opts.pwsz_light_theme_logo_svg`, and
+///   `opts.pwsz_dark_theme_logo_svg` must point to valid null-terminated UTF-16
+///   strings. `opts.pb_authenticator_info` must point to
+///   `opts.cb_authenticator_info` valid bytes. `opts.ppwsz_supported_rp_ids`,
+///   when `opts.c_supported_rp_ids > 0`, must point to an array of that many
+///   valid null-terminated UTF-16 strings.
 pub unsafe fn add_authenticator(
     opts: &WebauthnPluginAddAuthenticatorOptions,
     pp_response: *mut *mut WebauthnPluginAddAuthenticatorResponse,
@@ -450,11 +462,16 @@ use crate::com::uv_fallback::{observe_v2_result, should_fallback_to_v1};
 /// - `pwsz_user` and `pwsz_hint`, when non-null, must point to valid
 ///   null-terminated UTF-16 strings that remain live for the duration of the call.
 ///   Null is accepted by the Windows runtime (displayed as empty).
-/// - `cb_response` and `pp_response` must be valid, non-null, writable pointers.
-///   On return, `*pp_response` (when non-null) must be freed via
-///   [`free_user_verification_response`].
-/// - `buffer_to_sign` must remain valid for the duration of the call (it is
-///   referenced only via the `pb_buffer_to_sign` field in the on-stack struct).
+/// - `cb_response` must be a valid, non-null pointer to writable `u32` storage.
+///   On return, Windows writes the byte-count of the response buffer here. The
+///   `u32` itself is caller-owned and requires no deallocation.
+/// - `pp_response` must be a valid, non-null pointer to writable `*mut u8`
+///   storage. On `S_OK`, Windows writes a heap-allocated buffer into
+///   `*pp_response`; the caller must free it via
+///   [`free_user_verification_response`] on every exit path. `*pp_response`
+///   may be null on return (only meaningful when `*cb_response == 0`).
+/// - `buffer_to_sign` must be a valid slice for the duration of the call;
+///   Windows reads it as the data whose signature covers the UV response.
 pub unsafe fn perform_user_verification_2(
     hwnd:            isize,
     p_txid:          *const Guid,
