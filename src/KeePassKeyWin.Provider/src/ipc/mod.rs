@@ -370,6 +370,94 @@ mod tests {
         assert_eq!(e.message, "locked");
     }
 
+    /// 5.UV.8 stale-pipe retry shape: server closes the connection mid-RPC,
+    /// client reconnects, retry RPC completes. Covers the load-bearing
+    /// "drop dead pipe → reconnect → rerun call" chain that the Windows-only
+    /// `server::take_call_with_retry` helper relies on.
+    ///
+    /// Notes on what this test does and does NOT cover:
+    /// * NOT covered: the production helper itself (Windows-only — needs
+    ///   `sta_block_on`, `SHARED_STATE`, `connect_and_handshake`'s registry
+    ///   nonce read). Those are exercised at integration level on Windows
+    ///   via `validate-phase2.ps1` § Step 6c live-validation.
+    /// * NOT covered: the `BrokenPipe` error kind itself — Linux's tokio
+    ///   UnixStream produces a different error shape for peer-close (often
+    ///   `Ok("")` from `read_line`, leading to `ClientError::Json` from the
+    ///   empty-string parse, rather than `Io(BrokenPipe)`). Classification
+    ///   is unit-tested via synthetic `io::Error::new` in
+    ///   `crate::com::classify_rpc_error::tests`.
+    /// * IS covered: the assumption that two `PipeClient::connect` calls in
+    ///   the same process succeed (the second one against a fresh server
+    ///   instance), and the second client's `call` returns a valid response.
+    ///   If Linux's peer-close handling ever stops being recoverable by a
+    ///   second connect, this test catches it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_pipe_reconnect_round_trip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixListener;
+
+        let session_id: u32 = 55556;
+        let sock_path = format!("/tmp/keepasskeywin-test-{session_id}.sock");
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        tokio::spawn(async move {
+            // Connection 1: accept, read first request, drop the stream
+            // without responding. The client's recv_line returns
+            // `Ok("")` once EOF is observed; the empty-string parse then
+            // surfaces as `ClientError::Json`.
+            let (mut s1, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = s1.read(&mut buf).await.unwrap();
+            drop(s1);
+
+            // Connection 2: accept, read, send a happy "retry succeeded"
+            // response. Mirrors what the production retry path expects after
+            // a successful reconnect+rehandshake on Windows.
+            let (mut s2, _) = listener.accept().await.unwrap();
+            buf.fill(0);
+            let n = s2.read(&mut buf).await.unwrap();
+            let req: serde_json::Value = serde_json::from_slice(&buf[..n]).unwrap();
+            let id = &req["id"];
+            let resp = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{{\"retry_succeeded\":true}}}}\n"
+            );
+            s2.write_all(resp.as_bytes()).await.unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // First call: expected to fail (server dropped without responding).
+        let mut client1 = PipeClient::connect(session_id)
+            .await
+            .expect("first connect must succeed");
+        let result1: Result<serde_json::Value, ClientError> = client1
+            .call("test.method", serde_json::json!({"x": 1}))
+            .await;
+        assert!(
+            result1.is_err(),
+            "first call must fail after server-side drop, got: {result1:?}",
+        );
+
+        // Drop the dead client, reconnect to the listener (which is still
+        // alive in the spawned task — its second accept() is waiting).
+        drop(client1);
+        let mut client2 = PipeClient::connect(session_id)
+            .await
+            .expect("second connect must succeed — load-bearing for stale-pipe retry");
+        let result2: serde_json::Value = client2
+            .call("test.method", serde_json::json!({"x": 1}))
+            .await
+            .expect("retry call must succeed on fresh connection");
+        assert_eq!(
+            result2["retry_succeeded"], true,
+            "fresh connection must serve retry round-trip cleanly",
+        );
+
+        let _ = std::fs::remove_file(&sock_path);
+    }
+
     /// Unix-socket round-trip test: spins up a tiny JSON-RPC echo server,
     /// connects PipeClient, performs handshake, and calls a method.
     #[cfg(unix)]

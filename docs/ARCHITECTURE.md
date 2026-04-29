@@ -187,6 +187,43 @@ breadcrumbs are gated behind `KEEPASSKEYWIN_LOG_LEVEL=debug` (renamed in
 See `IPC_PROTOCOL.md` for the full field schema and `SECURITY.md` for the
 threat-model framing.
 
+### Sidecar stale-pipe inline retry (Phase 5.UV.8+)
+
+The sidecar caches the plugin pipe handle in process-wide `SHARED_STATE`
+after the first successful `keepasskeywin.hello` handshake — every COM
+activation reuses the same handle so concurrent activations don't fight
+over the plugin's single-instance pipe slot. When the plugin process
+restarts (KeePass close + reopen, KeePass update, lock-cycle reopen,
+crash) while the sidecar is still alive, the cached handle goes stale
+and the next dispatch's pipe write produces `Io(BrokenPipe) → E_FAIL`.
+
+**Contract.** The sidecar's dispatch helper detects stale pipes and
+recovers transparently within the same WebAuthn ceremony — the user does
+not see a generic "Something went wrong" on the first click after a
+KeePass restart. On `Io(BrokenPipe)` or `Io(ConnectionAborted)` from
+`pipe.call`, the helper drops the dead pipe, reconnects + re-runs the
+`keepasskeywin.hello` handshake, and retries the same JSON-RPC method
+with the same params. The UV signature collected earlier in the dispatch
+is reused, so the retry does not trigger a second Windows Hello prompt.
+Exactly one retry per dispatch; if the retry's reconnect or handshake
+also fails, `SHARED_STATE` is cleared so the next COM activation starts
+from scratch and the dispatch returns `E_FAIL` to webauthn.dll.
+
+The recovery applies to all four IPC methods that go over the cached
+pipe: `MakeCredential`, `GetAssertion`, `CancelOperation`, and
+`GetLockStatus`. Cancel discards its result regardless of retry outcome
+(it is a best-effort signal); the other three propagate the retry's
+result through their existing HRESULT-mapping arms. On
+`CancelOperation` the helper also closes a latent self-poisoning case
+where a pre-5.UV.8 stale-pipe error would have been silently stored back
+into the cached state and surfaced on the next real dispatch.
+
+The classifier intentionally treats only `BrokenPipe` and
+`ConnectionAborted` as recoverable; `UnexpectedEof` and `NotConnected`
+fall through to `E_FAIL` for v1, on the cost-asymmetry argument that an
+unrecovered bug is more expensive than an unnecessary retry that
+probably succeeds. Broaden only on live evidence.
+
 ## Storage schema
 
 One `PwEntry` per credential in a dedicated "Passkeys" group. Title: `<rpName> / <userDisplayName>`.

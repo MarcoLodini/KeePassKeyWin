@@ -184,30 +184,13 @@ pub(crate) mod imp {
                 // wins, the second gets HandshakeInvalid and drops the pipe.
                 // Not a v1 concern — browsers don't register concurrently.
                 // Documented in docs/IPC_PROTOCOL.md.
+                //
+                // Implementation shares `connect_and_handshake` with the
+                // 5.UV.8 inline stale-pipe retry path (server::take_call_with_retry)
+                // — DRY between activation and retry, single failure mode
+                // catalog, single set of breadcrumbs.
                 let pipe = runtime.block_on(async {
-                    let mut p = match crate::ipc::PipeClient::connect(session_id).await {
-                        Ok(p)  => { dbg_step!("pipe connect OK"); p }
-                        Err(e) => { dbg_step!("pipe connect FAILED: {e}"); return None; }
-                    };
-                    let nonce = match read_handshake_nonce() {
-                        Some(n) => {
-                            let prefix: String = n.chars().take(8).collect();
-                            dbg_step!("read nonce from HKCU: \"{prefix}...\" ({} chars)", n.len());
-                            n
-                        }
-                        None => {
-                            dbg_step!("read nonce FAILED — HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing");
-                            return None;
-                        }
-                    };
-                    // 5.UV.4: opSignPublicKeyB64 is now required by the plugin.
-                    // Fetch the key bytes before sending hello; if unavailable,
-                    // handshake() returns Err and the activation fails gracefully.
-                    let pub_key = crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
-                    match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce, pub_key).await {
-                        Ok(())  => { dbg_step!("handshake OK"); Some(p) }
-                        Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
-                    }
+                    connect_and_handshake(session_id, "[activate]").await.ok()
                 });
 
                 // Only cache in SHARED_STATE when the handshake actually
@@ -301,6 +284,109 @@ pub(crate) mod imp {
         let wchars = (cb as usize) / 2;
         let end = buf[..wchars].iter().position(|&c| c == 0).unwrap_or(wchars);
         String::from_utf16(&buf[..end]).ok()
+    }
+
+    /// Connect the plugin pipe and complete the `keepasskeywin.hello`
+    /// handshake. Shared between first-activation (`cf_create_instance`) and
+    /// the 5.UV.8 inline stale-pipe retry path (`server::take_call_with_retry`).
+    ///
+    /// Each step (pipe connect → nonce read → handshake) emits a tracing
+    /// breadcrumb under the caller-supplied `log_prefix` so the unified
+    /// failure-mode catalog reads naturally in `sidecar.log`. Production
+    /// call sites currently pass `"[activate]"` (first-activation),
+    /// `"[dispatch]"` (dispatch-time retry), `"[cancel]"` (cancel-time
+    /// retry), and `"[lock-status]"` (getLockStatus-time retry); other
+    /// `&'static str` prefixes are accepted. Tracing levels: `info!` for
+    /// success and pipe-connect / nonce-read failures (which are
+    /// "plugin-not-running-yet" signals during normal startup); `warn!` for
+    /// handshake-protocol failure (PFN mismatch, plugin sig-verify reject,
+    /// op-sign-key absence) — that's a *protocol* fault rather than a
+    /// connectivity fault, so it deserves heightened visibility.
+    ///
+    /// The 5.UV.4 op-signing public-key requirement is enforced internally —
+    /// `handshake()` returns `Err(InvalidRequest)` when the key is unavailable.
+    ///
+    /// `log_prefix` is `&'static str` rather than `&str` because the helper
+    /// is called inside futures driven by `runtime.block_on` and `sta_block_on`,
+    /// both of which require `'static` futures (the latter additionally
+    /// requires `Send`). Production call sites pass string literals, so
+    /// this constraint is invisible.
+    pub(crate) async fn connect_and_handshake(
+        session_id: u32,
+        log_prefix: &'static str,
+    ) -> Result<crate::ipc::PipeClient, crate::ipc::ClientError> {
+        use crate::ipc::ClientError;
+
+        let mut p = match crate::ipc::PipeClient::connect(session_id).await {
+            Ok(p) => {
+                tracing::info!("{log_prefix} pipe connect OK");
+                p
+            }
+            Err(e) => {
+                tracing::info!("{log_prefix} pipe connect FAILED: {e}");
+                return Err(e);
+            }
+        };
+
+        let nonce = match read_handshake_nonce() {
+            Some(n) => {
+                let prefix: String = n.chars().take(8).collect();
+                tracing::info!(
+                    "{log_prefix} read nonce from HKCU: \"{prefix}...\" ({} chars)",
+                    n.len()
+                );
+                n
+            }
+            None => {
+                // `read_handshake_nonce` returns `None` for any registry
+                // failure (key absent, wrong type, ACL deny, corruption) —
+                // the message says "missing" but a richer error type that
+                // disambiguates these is queued as a 5.UV.8 follow-up.
+                tracing::info!(
+                    "{log_prefix} read nonce FAILED — HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing"
+                );
+                return Err(ClientError::InvalidRequest(
+                    "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing".to_string(),
+                ));
+            }
+        };
+
+        // 5.UV.4: opSignPublicKeyB64 is required by the plugin. Fetch the key
+        // bytes before sending hello; if unavailable, handshake() returns
+        // Err(InvalidRequest) and we propagate it.
+        let pub_key = crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
+        match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce, pub_key).await {
+            Ok(()) => {
+                tracing::info!("{log_prefix} handshake OK");
+                Ok(p)
+            }
+            Err(e) => {
+                // `warn!` (not `info!`) — handshake failure with a fresh
+                // pipe signals a *protocol* fault: PFN mismatch, plugin
+                // sig-verify rejection, or op-sign-key absence. Distinct
+                // from connect/nonce failures, which are normal-startup
+                // "plugin not ready yet" signals at `info!`.
+                tracing::warn!("{log_prefix} handshake FAILED: {e:?}");
+                Err(e)
+            }
+        }
+    }
+
+    /// Clear the process-wide `SHARED_STATE` slot. Called from the 5.UV.8
+    /// retry helper (`server::take_call_with_retry`) when reconnect+rehandshake
+    /// fails on a retry — without this, the next COM activation would reuse
+    /// a half-dead `Arc` whose inner pipe is permanently `None` (the
+    /// unconditional `.take()` at the entry of `take_call_with_retry`
+    /// happens *before* the retry decision is made, so the surviving Arc
+    /// has `pipe = None` regardless of retry outcome).
+    ///
+    /// Race-safety: in-flight dispatches hold their own `Arc` clones; this
+    /// function only drops the slot's clone. `strong_count` does not reach
+    /// zero just because this slot is cleared. Goes through the generic
+    /// `classify_rpc_error::clear_slot` so the underlying logic is exercised
+    /// by Linux-CI unit tests with a stub `T`.
+    pub(crate) fn clear_shared_state() {
+        crate::com::classify_rpc_error::clear_slot(&SHARED_STATE);
     }
 
     unsafe extern "system" fn cf_lock_server(_this: *mut ClassFactory, lock: i32) -> HRESULT {
@@ -535,6 +621,12 @@ pub(crate) mod imp {
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
+
+// 5.UV.8: shared connect+handshake helper and SHARED_STATE clearer, used by
+// `com::server::take_call_with_retry`. Re-exported at module level so the
+// retry path doesn't need to reach into `imp`.
+#[cfg(windows)]
+pub(crate) use imp::{clear_shared_state, connect_and_handshake};
 
 /// Run the EXE as an out-of-process COM class factory (STA).
 ///

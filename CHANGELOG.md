@@ -106,6 +106,27 @@ people upgrading mid-development.
 
 ### Fixed
 
+- **Sidecar inline stale-pipe retry** (Phase 5.UV.8). When the KeePass plugin
+  process restarts (close/reopen, update, lock-cycle, crash) while the
+  sidecar is still alive in the COM ExeServer idle window, the cached pipe
+  handle in process-wide `SHARED_STATE` goes stale; the next dispatch's
+  pipe write produced `Io(BrokenPipe) → E_FAIL`, surfacing as a generic
+  "Something went wrong" on the user's first WebAuthn click. The sidecar
+  dispatch helper now classifies the error, drops the dead pipe,
+  reconnects + re-runs the `keepasskeywin.hello` handshake, and retries
+  the same JSON-RPC method with the same params (the UV signature
+  collected earlier in the dispatch is reused, so no second Windows Hello
+  prompt). Exactly one retry per dispatch — if reconnect/re-handshake
+  also fails, `SHARED_STATE` is cleared so the next COM activation starts
+  fresh and the dispatch returns `E_FAIL`. Applied to all four IPC methods
+  that go over the cached pipe (`MakeCredential`, `GetAssertion`,
+  `CancelOperation`, `GetLockStatus`) — same UX axis on which v1 (clear-
+  and-fail) was rejected. On `CancelOperation` this also closes a latent
+  self-poisoning case where a stale-pipe error would have been silently
+  stored back into the cached state and surfaced on the next real
+  dispatch. Workaround for users on pre-5.UV.8 sidecars was
+  `Stop-Process -Name keepasskeywin-provider -Force` before each KeePass
+  restart; that workaround is no longer needed.
 - **Call-time v2 → v1 fallback on `E_NOTIMPL`** (Phase 5.UV.7). On Windows 11
   24H2 build 26100.6725+ (KB5068861), `WebAuthNPluginPerformUserVerification2`
   resolves at load time but is a forward-declared stub returning `E_NOTIMPL`.

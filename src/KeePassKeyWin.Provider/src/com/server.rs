@@ -233,6 +233,133 @@ pub(crate) mod imp {
         prev - 1
     }
 
+    // ── 5.UV.8 inline stale-pipe retry helper ────────────────────────────────
+
+    /// Take the pipe out of `state`, perform the JSON-RPC call, and on a
+    /// stale-pipe error (`RpcErrorClass::Stale`) drop the dead pipe,
+    /// reconnect + re-handshake via `exe_server::connect_and_handshake`, and
+    /// retry the call once with the same params. Reconciles `state.pipe`
+    /// and `SHARED_STATE` internally — callers do nothing post-call beyond
+    /// reading the returned `Option<Result>`.
+    ///
+    /// State reconciliation (handled internally so the load-bearing
+    /// "pipe = None on ClearSharedState" invariant is type-enforced rather
+    /// than convention-enforced):
+    ///
+    /// * First-attempt success / non-stale Err — original `pipe` is alive;
+    ///   stored back into `state.pipe`.
+    /// * Stale, retry-RPC succeeded / failed for non-connect reason — the
+    ///   fresh pipe is alive (handshake completed); stored into `state.pipe`,
+    ///   replacing the dead one.
+    /// * Stale, retry's reconnect or re-handshake failed — `state.pipe` is
+    ///   left as `None` (the entry-side `take()` already nulled it) and
+    ///   `clear_shared_state()` is called so the next COM activation
+    ///   reconnects from scratch instead of reusing this half-dead Arc.
+    ///
+    /// Returns:
+    /// * `None` — `state.pipe` was already `None` at entry. Caller maps to
+    ///   the method-specific default (E_FAIL for dispatch, S_OK for cancel,
+    ///   `Locked` for getLockStatus).
+    /// * `Some(Ok(value))` — first attempt or retry succeeded.
+    /// * `Some(Err(e))` — first attempt failed for a non-stale reason
+    ///   (vault locked, no credentials, etc.), OR retry's RPC failed, OR
+    ///   retry's reconnect/handshake failed. Caller maps to its
+    ///   method-specific HRESULT via the existing `match` arms.
+    ///
+    /// Exactly one retry per dispatch — no recursion. If the retry's RPC
+    /// also produces a stale error, it propagates as a normal `Err` without
+    /// a second retry. Tracing levels: `info!` for neutral breadcrumbs;
+    /// `warn!` for the recoverable stale signal and retry-RPC errors;
+    /// `error!` for retry-connect/handshake exhaustion.
+    pub(crate) fn take_call_with_retry(
+        state: &Arc<Mutex<KeePassKeyWinAuthenticatorState>>,
+        method: &str,
+        params: serde_json::Value,
+        log_prefix: &'static str,
+    ) -> Option<Result<serde_json::Value, ClientError>> {
+        use crate::com::classify_rpc_error::{classify_rpc_error, RpcErrorClass};
+
+        // Sync extract of pipe + session_id. The inner Mutex is released
+        // before any `.await` — never held across STA-pumping waits (doing
+        // so would deadlock a re-entrant COM dispatch on the same STA
+        // thread; same rationale as `KeePassKeyWinAuthenticatorState`'s
+        // doc above).
+        let pipe = { state.lock().unwrap().pipe.take() }?;
+        let session_id = { state.lock().unwrap().session_id };
+
+        let method_owned = method.to_string();
+        // Clone before move-into-future: the first `.call` consumes
+        // `params`; the retry needs a fresh copy if r1 is Stale.
+        let params_for_retry = params.clone();
+
+        // Run the retry orchestration in a single STA-safe future. The
+        // tuple's second element is `Option<PipeClient>`:
+        //   Some(p) → store p back into state.pipe (first-attempt or retry
+        //             produced a live pipe).
+        //   None    → leave state.pipe = None and clear SHARED_STATE
+        //             (retry's reconnect/handshake failed).
+        let (result, fresh_pipe_opt): (Result<serde_json::Value, ClientError>, Option<PipeClient>) =
+            sta_block_on(async move {
+                let mut p = pipe;
+                let r1 = p.call(&method_owned, params).await;
+
+                // Borrow-only stale check; r1 is consumed below. The
+                // matches! arm guarantees r1 is Err on the truthy branch —
+                // any future refactor that changes this is a correctness
+                // bug, see the unreachable! below.
+                let is_stale = matches!(
+                    &r1,
+                    Err(e) if classify_rpc_error(e) == RpcErrorClass::Stale
+                );
+                if !is_stale {
+                    return (r1, Some(p));
+                }
+
+                let stale_err = match r1 {
+                    Err(e) => e,
+                    Ok(_) => unreachable!(
+                        "is_stale matches! above only fires on Err(_); refactor must preserve that invariant"
+                    ),
+                };
+                tracing::warn!(
+                    "{log_prefix} RPC err: {stale_err:?} — stale pipe, retrying once via reconnect+rehandshake"
+                );
+                drop(p);
+
+                match crate::com::exe_server::connect_and_handshake(session_id, log_prefix).await {
+                    Ok(mut fresh) => {
+                        let r2 = fresh.call(&method_owned, params_for_retry).await;
+                        match &r2 {
+                            Ok(_) => tracing::info!("{log_prefix} retry OK"),
+                            Err(e2) => tracing::warn!("{log_prefix} retry RPC err: {e2:?}"),
+                        }
+                        (r2, Some(fresh))
+                    }
+                    Err(connect_err) => {
+                        tracing::error!(
+                            "{log_prefix} retry connect/handshake failed: {connect_err:?} — clearing SHARED_STATE"
+                        );
+                        (Err(connect_err), None)
+                    }
+                }
+            });
+
+        // Reconcile state in exactly one place. `Some` ⇒ store the live pipe
+        // back; `None` ⇒ leave state.pipe as None (already nulled by the
+        // `take()` above) and clear SHARED_STATE so the next COM activation
+        // reconnects from scratch instead of reusing this half-dead Arc.
+        match fresh_pipe_opt {
+            Some(p) => {
+                state.lock().unwrap().pipe = Some(p);
+            }
+            None => {
+                crate::com::exe_server::clear_shared_state();
+            }
+        }
+
+        Some(result)
+    }
+
     // ── IPluginAuthenticator ─────────────────────────────────────────────────
 
     unsafe extern "system" fn make_credential(
@@ -272,24 +399,20 @@ pub(crate) mod imp {
         // skips signature verification on CancelOperation. Plugin-side sig
         // verification (5.UV.2/5.UV.5) covers MakeCredential and GetAssertion only.
 
-        // Take pipe out of state, release lock before STA-pumping wait.
-        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
-        let mut pipe = match pipe_opt {
-            Some(p) => p,
-            // Pipe already in use by another dispatch (re-entrant case) or not
-            // connected. Report success — a cancellation that can't reach the
-            // vault is treated as a best-effort signal, not a hard error.
-            None => return HRESULT(0),
-        };
-
+        // 5.UV.8: route through take_call_with_retry so a stale pipe
+        // self-heals on cancel rather than poisoning the cached pipe for
+        // the next real dispatch. The result is intentionally discarded —
+        // cancel is a best-effort signal — but the helper's internal state
+        // reconciliation (store-back vs clear SHARED_STATE) still matters.
+        // None at entry = pipe already in use by another dispatch
+        // (re-entrant case) or not connected; cancel reports S_OK either way.
         let params = serde_json::json!({ "transactionId": txn });
-        let (_result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
-            sta_block_on(async move {
-                let r = pipe.call("keepasskeywin.cancelOperation", params).await;
-                (r, pipe)
-            });
-
-        obj.state.lock().unwrap().pipe = Some(pipe_back);
+        let _ = take_call_with_retry(
+            &obj.state,
+            "keepasskeywin.cancelOperation",
+            params,
+            "[cancel]",
+        );
         HRESULT(0)
     }
 
@@ -299,22 +422,22 @@ pub(crate) mod imp {
     ) -> HRESULT {
         let obj = unsafe { &*this };
 
-        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
-        let mut pipe = match pipe_opt {
-            Some(p) => p,
+        // 5.UV.8: route through take_call_with_retry so a stale pipe
+        // self-heals here (was a one-strike E_FAIL → "authenticator
+        // unavailable" UX glitch in the Windows host before this fix; same
+        // UX axis on which v1 was rejected for the dispatch path).
+        let result = match take_call_with_retry(
+            &obj.state,
+            "keepasskeywin.getLockStatus",
+            serde_json::json!({}),
+            "[lock-status]",
+        ) {
+            Some(r) => r,
             None => {
                 unsafe { *lock_status = PluginLockStatus::Locked };
                 return HRESULT(0);
             }
         };
-
-        let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
-            sta_block_on(async move {
-                let r = pipe.call("keepasskeywin.getLockStatus", serde_json::json!({})).await;
-                (r, pipe)
-            });
-
-        obj.state.lock().unwrap().pipe = Some(pipe_back);
 
         match result {
             Ok(v) => {
@@ -437,15 +560,7 @@ pub(crate) mod imp {
         }
 
         // ── Step 3: UV succeeded — forward to the C# plugin via IPC ──────────
-        let pipe_opt = { obj.state.lock().unwrap().pipe.take() };
-        let mut pipe = match pipe_opt {
-            Some(p) => { dbg_step!("pipe taken from state"); p }
-            None => {
-                dbg_step!("pipe MISSING from state (plugin likely not connected) — returning E_FAIL");
-                return HRESULT(E_FAIL as i32);
-            }
-        };
-
+        //
         // 5.UV.2/5.UV.5: pbRequestSignatureB64 is verified by the plugin (sole
         // verifier since 5.UV.5 removed the sidecar-side gate).
         // 5.UV.3: uvSignatureB64 carries the opaque PerformUserVerification(2)
@@ -458,16 +573,22 @@ pub(crate) mod imp {
             "uvSignatureB64": base64::engine::general_purpose::STANDARD.encode(&uv_sig_bytes),
             "uvBindingTier": uv_tier.ipc_str(),
         });
-        let method_owned = method.to_string();
         dbg_step!("RPC call {method} (cbor {}B) ...", cbor_bytes.len());
-        let (result, pipe_back): (std::result::Result<serde_json::Value, ClientError>, PipeClient) =
-            sta_block_on(async move {
-                let r = pipe.call(&method_owned, params).await;
-                (r, pipe)
-            });
-        dbg_step!("RPC returned");
 
-        obj.state.lock().unwrap().pipe = Some(pipe_back);
+        // 5.UV.8: route through take_call_with_retry so a stale pipe
+        // (cached after a plugin process restart while the sidecar is still
+        // alive) is recovered transparently — drop dead pipe, reconnect +
+        // re-handshake, retry the same RPC with the same params (UV
+        // signature already in hand on the stack, so no re-prompt). The
+        // helper reconciles `state.pipe` and `SHARED_STATE` internally.
+        let result = match take_call_with_retry(&obj.state, method, params, "[dispatch]") {
+            Some(r) => r,
+            None => {
+                dbg_step!("pipe MISSING from state (plugin likely not connected) — returning E_FAIL");
+                return HRESULT(E_FAIL as i32);
+            }
+        };
+        dbg_step!("RPC returned");
 
         match result {
             Ok(v) => {

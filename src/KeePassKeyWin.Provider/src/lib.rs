@@ -47,6 +47,10 @@ pub mod com {
     // 5.UV.7 v2→v1 call-time fallback decision helpers + cache mutation.
     // Cross-platform (tests run on Linux). Imported by webauthn_ext::perform_user_verification_2.
     pub mod uv_fallback;
+    // 5.UV.8 stale-pipe classifier + generic SHARED_STATE slot-clearing helper.
+    // Cross-platform (tests run on Linux). Imported by server::take_call_with_retry
+    // and exe_server::clear_shared_state.
+    pub mod classify_rpc_error;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;
