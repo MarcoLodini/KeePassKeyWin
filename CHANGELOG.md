@@ -106,6 +106,41 @@ people upgrading mid-development.
 
 ### Fixed
 
+- **Faithful registry-error messages from `read_handshake_nonce`** (Phase 5.UV.9).
+  Surfaced by 5.UV.8's silent-failure-hunter audit: the sidecar's helper that
+  reads `HKCU\Software\KeePassKeyWin\HandshakeNonce` collapsed every
+  `RegGetValueW` failure mode (key absent, wrong value type, ACL deny, registry
+  corruption, buffer too small, malformed UTF-16) to a single `Option::None`,
+  which `connect_and_handshake` then logged as `... missing` — wording faithful
+  only for the key-absent case. A new cross-platform `RegReadError` enum and a
+  pure `lstatus_to_reg_read_error` mapper (Linux-CI tested) classify the failure
+  into `NotFound | WrongType { actual_type } | AccessDenied | BufferTooSmall |
+  MalformedString | Other(LSTATUS)`, and `connect_and_handshake` maps each
+  variant to a distinct `ClientError::InvalidRequest("HKCU\\... <reason>")`
+  message, both in the tracing log line and in the returned error string. No
+  production behaviour change beyond log/error text accuracy.
+- **Windows-target `cargo clippy` is now clean** (Phase 5.UV.9.5).
+  Pre-Phase-6 polish: `cargo clippy --target x86_64-pc-windows-msvc --release
+  --all-targets` was not gated by CI (which only runs Linux-target clippy +
+  `cargo xwin build`) and surfaced 9 deny-by-default `not_unsafe_ptr_arg_deref`
+  errors plus 11 warnings across `webauthn_ext.rs`, `request_sig.rs`,
+  `server.rs`, `exe_server.rs`. Five public functions that dereference raw
+  pointers are now `unsafe fn` with per-parameter `# Safety` doc-comments
+  (including the `WebauthnPluginAddAuthenticatorOptions.rclsid` REFCLSID-trap
+  warning that the v1 register path lacked but `perform_user_verification_2`
+  documents); call sites in `exe_server.rs` and `server.rs` are wrapped in
+  explicit `unsafe { ... }` blocks with inline SAFETY rationales. Five
+  `transmute::<_, Pfn...>` calls have explicit source types; four
+  `b"...\0".as_ptr()` byte-strings are `c"...".as_ptr().cast::<u8>()`
+  (`PCSTR` wraps `*const u8`, `CStr::as_ptr` returns `*const c_char`); idiomatic
+  `iter().any() → contains()` and `for i in 0..n` → `.iter().enumerate()`
+  rewrites. While auditing, found a hidden Windows-target test compile error:
+  the `make_credential_cbor` test fixture used `coset::iana::Algorithm::ES256`,
+  but `coset` was only a transitive dep of `passkey-types` — it failed to
+  resolve on `cargo clippy --target x86_64-pc-windows-msvc`. Linux CI cfg's
+  the `#[cfg(windows)]` fixture out and `cargo xwin build` doesn't compile
+  tests, so the gap had been silent. Added `coset = "0.3"` as a dev-dep,
+  pinned to match the resolved 0.3.8.
 - **Sidecar inline stale-pipe retry** (Phase 5.UV.8). When the KeePass plugin
   process restarts (close/reopen, update, lock-cycle, crash) while the
   sidecar is still alive in the COM ExeServer idle window, the cached pipe
