@@ -290,7 +290,7 @@ pub(crate) mod imp {
 
         if status.is_err() {
             // status.0 is the raw WIN32_ERROR u32; cast to i32 for the mapper.
-            return Err(lstatus_to_reg_read_error(status.0 as i32, None));
+            return Err(lstatus_to_reg_read_error(status.0 as i32));
         }
 
         // Read succeeded but we must verify the type ourselves (RRF_RT_ANY).
@@ -301,7 +301,10 @@ pub(crate) mod imp {
         // cb is bytes written including the trailing UTF-16 null.
         let wchars = (cb as usize) / 2;
         let end = buf[..wchars].iter().position(|&c| c == 0).unwrap_or(wchars);
-        String::from_utf16(&buf[..end]).map_err(|_| RegReadError::Other(0))
+        // Mapping `from_utf16` failure to `Other(0)` would log "LSTATUS 0x00000000"
+        // (= ERROR_SUCCESS) — a self-contradicting message. `MalformedString`
+        // is its own variant so the log line names the actual fault.
+        String::from_utf16(&buf[..end]).map_err(|_| RegReadError::MalformedString)
     }
 
     /// Connect the plugin pipe and complete the `keepasskeywin.hello`
@@ -371,6 +374,8 @@ pub(crate) mod imp {
                         "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce access denied".to_string(),
                     RegReadError::BufferTooSmall =>
                         "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce buffer too small".to_string(),
+                    RegReadError::MalformedString =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce contains invalid UTF-16 data".to_string(),
                     RegReadError::Other(code) =>
                         format!(
                             "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce LSTATUS 0x{:08x}",

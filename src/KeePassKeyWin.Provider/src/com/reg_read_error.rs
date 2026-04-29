@@ -10,18 +10,14 @@
 //!
 //! ## Mapping contract
 //!
-//! `lstatus_to_reg_read_error(status, actual_type)` is called by
-//! `exe_server::read_handshake_nonce` exactly when the read did NOT yield a
-//! valid REG_SZ string. Two entry conditions:
-//!
-//! * `status != 0` → call with `(status, None)`. The mapper switches on
-//!   well-known Windows error codes and falls through to `Other(status)`.
-//! * `status == 0 && actual_type != REG_SZ` → call with `(0, Some(actual_type))`.
-//!   The mapper returns `WrongType { actual_type }`.
-//!
-//! Combinations outside these two conditions (e.g. `status == 0, actual_type =
-//! Some(1 /*REG_SZ*/)`) are not valid call sites — the caller should have
-//! returned `Ok` rather than reaching the error path.
+//! `lstatus_to_reg_read_error(status)` classifies the LSTATUS returned by a
+//! failed `RegGetValueW` call. The caller MUST pass a non-zero `status` —
+//! the success-path variants (`WrongType`, `MalformedString`) are constructed
+//! directly at the call site in `exe_server::read_handshake_nonce` because
+//! they need data that is not available to a pure LSTATUS classifier (the
+//! `actual_type` out-param and the post-decode UTF-16 result respectively).
+//! A `debug_assert!` enforces the non-zero contract; release builds fall
+//! through to `Other(0)`.
 
 /// LSTATUS is `i32` on Windows (`windows::Win32::Foundation::WIN32_ERROR` underlying type)
 /// and a plain `i32` alias everywhere else so the pure mapper compiles on Linux CI.
@@ -54,33 +50,41 @@ pub enum RegReadError {
     /// The value exists but the read buffer was too small
     /// (ERROR_MORE_DATA = 234).
     BufferTooSmall,
+    /// The value is REG_SZ but its raw bytes are not valid UTF-16
+    /// (corrupted value, partial write, encoding mismatch). Constructed
+    /// directly at the post-decode site in `read_handshake_nonce` — not
+    /// produced by `lstatus_to_reg_read_error` (the LSTATUS itself is
+    /// `ERROR_SUCCESS`; the failure is at the byte-content layer).
+    MalformedString,
     /// Any other LSTATUS code not mapped to a named variant.
     Other(LSTATUS),
 }
 
 // ── Pure mapper ───────────────────────────────────────────────────────────────
 
-/// Classify a raw registry read outcome into a [`RegReadError`].
+/// Classify a non-zero LSTATUS from `RegGetValueW` into a [`RegReadError`].
 ///
-/// # Arguments
-///
-/// * `status` — the raw LSTATUS returned by `RegGetValueW` (passed as `i32`
-///   regardless of platform). Zero means the OS call succeeded but the data
-///   type is wrong (see `actual_type`).
-/// * `actual_type` — the raw `REG_VALUE_TYPE.0` value captured from
-///   `RegGetValueW`'s `pdwType` out-param. **Must be `Some(t)`** when
-///   `status == 0` (success-with-wrong-type path); ignored when `status != 0`.
+/// Caller MUST pass a non-zero `status` — `WrongType` (success-with-wrong-type)
+/// and `MalformedString` (success-but-bad-UTF-16) are constructed directly
+/// at the call site because they need data the LSTATUS classifier doesn't
+/// have. A `debug_assert!` enforces the contract; release builds with
+/// `status == 0` fall through to `Other(0)`, which is misleading but
+/// unreachable in production.
 ///
 /// # Mapping
 ///
-/// | `status` | `actual_type` | result |
-/// |----------|---------------|--------|
-/// | 2 or 3   | any           | `NotFound` |
-/// | 5        | any           | `AccessDenied` |
-/// | 234      | any           | `BufferTooSmall` |
-/// | 0        | `Some(t)`     | `WrongType { actual_type: t }` |
-/// | other ≠0 | any           | `Other(status)` |
-pub fn lstatus_to_reg_read_error(status: LSTATUS, actual_type: Option<u32>) -> RegReadError {
+/// | `status`   | result |
+/// |------------|--------|
+/// | 2 or 3     | `NotFound` |
+/// | 5          | `AccessDenied` |
+/// | 234        | `BufferTooSmall` |
+/// | other ≠ 0  | `Other(status)` |
+pub fn lstatus_to_reg_read_error(status: LSTATUS) -> RegReadError {
+    debug_assert!(
+        status != 0,
+        "lstatus_to_reg_read_error called with status=0; \
+         success-path variants are constructed at the call site"
+    );
     // Windows error codes as plain integer constants so this function compiles
     // cross-platform without importing `windows::Win32::Foundation::*`.
     const ERROR_FILE_NOT_FOUND: i32 = 2;
@@ -89,13 +93,6 @@ pub fn lstatus_to_reg_read_error(status: LSTATUS, actual_type: Option<u32>) -> R
     const ERROR_MORE_DATA: i32 = 234;
 
     match status {
-        0 => {
-            // Success status but we reached the error path — the value type is
-            // not REG_SZ. `actual_type` is guaranteed Some by the call contract.
-            RegReadError::WrongType {
-                actual_type: actual_type.unwrap_or(0),
-            }
-        }
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => RegReadError::NotFound,
         ERROR_ACCESS_DENIED => RegReadError::AccessDenied,
         ERROR_MORE_DATA => RegReadError::BufferTooSmall,
@@ -114,13 +111,13 @@ mod tests {
     #[test]
     fn error_file_not_found_maps_to_not_found() {
         // ERROR_FILE_NOT_FOUND = 2 — the key/value is absent.
-        assert_eq!(lstatus_to_reg_read_error(2, None), RegReadError::NotFound);
+        assert_eq!(lstatus_to_reg_read_error(2), RegReadError::NotFound);
     }
 
     #[test]
     fn error_path_not_found_maps_to_not_found() {
         // ERROR_PATH_NOT_FOUND = 3 — the sub-key path doesn't exist.
-        assert_eq!(lstatus_to_reg_read_error(3, None), RegReadError::NotFound);
+        assert_eq!(lstatus_to_reg_read_error(3), RegReadError::NotFound);
     }
 
     // ── AccessDenied ─────────────────────────────────────────────────────────
@@ -128,10 +125,7 @@ mod tests {
     #[test]
     fn error_access_denied_maps_to_access_denied() {
         // ERROR_ACCESS_DENIED = 5.
-        assert_eq!(
-            lstatus_to_reg_read_error(5, None),
-            RegReadError::AccessDenied,
-        );
+        assert_eq!(lstatus_to_reg_read_error(5), RegReadError::AccessDenied);
     }
 
     // ── BufferTooSmall ───────────────────────────────────────────────────────
@@ -139,64 +133,23 @@ mod tests {
     #[test]
     fn error_more_data_maps_to_buffer_too_small() {
         // ERROR_MORE_DATA = 234 — value exists but buffer was undersized.
-        assert_eq!(
-            lstatus_to_reg_read_error(234, None),
-            RegReadError::BufferTooSmall,
-        );
-    }
-
-    // ── WrongType ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn success_with_reg_dword_maps_to_wrong_type() {
-        // status == 0, actual_type == REG_DWORD (4).
-        assert_eq!(
-            lstatus_to_reg_read_error(0, Some(4)),
-            RegReadError::WrongType { actual_type: 4 },
-        );
-    }
-
-    #[test]
-    fn success_with_reg_binary_maps_to_wrong_type() {
-        // status == 0, actual_type == REG_BINARY (3).
-        assert_eq!(
-            lstatus_to_reg_read_error(0, Some(3)),
-            RegReadError::WrongType { actual_type: 3 },
-        );
-    }
-
-    #[test]
-    fn success_with_reg_multi_sz_maps_to_wrong_type() {
-        // status == 0, actual_type == REG_MULTI_SZ (7).
-        assert_eq!(
-            lstatus_to_reg_read_error(0, Some(7)),
-            RegReadError::WrongType { actual_type: 7 },
-        );
+        assert_eq!(lstatus_to_reg_read_error(234), RegReadError::BufferTooSmall);
     }
 
     // ── Other ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn unknown_status_maps_to_other() {
-        // An arbitrary non-zero LSTATUS not in the named variants.
+        // Arbitrary non-zero LSTATUS values not in the named variants.
         // 6 = ERROR_INVALID_HANDLE, 87 = ERROR_INVALID_PARAMETER.
-        assert_eq!(
-            lstatus_to_reg_read_error(6, None),
-            RegReadError::Other(6),
-        );
-        assert_eq!(
-            lstatus_to_reg_read_error(87, None),
-            RegReadError::Other(87),
-        );
+        assert_eq!(lstatus_to_reg_read_error(6), RegReadError::Other(6));
+        assert_eq!(lstatus_to_reg_read_error(87), RegReadError::Other(87));
     }
 
     #[test]
     fn negative_status_maps_to_other() {
         // Some registry functions can return negative LSTATUS values
         // (though rare). Verify Other captures the sign correctly.
-        assert_eq!(
-            lstatus_to_reg_read_error(-1, None),
-            RegReadError::Other(-1),
-        );
+        assert_eq!(lstatus_to_reg_read_error(-1), RegReadError::Other(-1));
     }
 }
