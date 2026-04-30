@@ -1,22 +1,21 @@
-//! Log-filter parsing with per-directive warning capture (Phase 5.UV.6).
+//! Pre-validation of log-filter directives with warning capture.
 //!
-//! Background: `tracing_subscriber::EnvFilter::builder().from_env_lossy()` and
-//! `parse_lossy(...)` print per-directive parse warnings via `eprintln!`. Under
+//! [`EnvFilter`]'s lossy parsing methods (`from_env_lossy`, `parse_lossy`)
+//! emit per-directive parse warnings to stderr via `eprintln!`. Under
 //! `windows_subsystem = "windows"` the COM-activated sidecar's stderr is a
-//! closed handle, so a typo in `KEEPASSKEYWIN_LOG_LEVEL` keeps the parseable
-//! rest of the filter (lossy semantics) but the user gets no signal which
-//! directive was rejected. 5.UV.4.5 documented this gap; 5.UV.6 closes it.
+//! closed handle, making those warnings invisible — a typo in e.g.
+//! `KEEPASSKEYWIN_LOG_LEVEL` silently discards that directive with no
+//! user-visible signal. This module closes that gap.
 //!
-//! Approach: pre-validate each comma-separated directive ourselves via
-//! `Directive::from_str`. Successful directives pass through to a joined
-//! string; failures are collected into a `Vec<String>` of human-readable
-//! warnings. The caller passes the joined string to `parse_lossy(...)` —
-//! since every part is now known-good, `parse_lossy` emits nothing —
-//! and re-emits each captured warning via `tracing::warn!()` AFTER the
-//! subscriber is initialised, so the warnings flow through whichever
-//! sink (file or stderr) the subscriber routes through.
+//! It pre-validates each comma-separated directive via
+//! [`Directive::from_str`]. Valid directives are joined back into a string
+//! that is guaranteed warning-free for `parse_lossy`; rejected directives are
+//! collected as structured warnings that the caller re-emits through the
+//! tracing subscriber (e.g. via [`tracing::warn!`]) after initialisation,
+//! routing them through whichever sink (file, stderr, etc.) the subscriber
+//! provides.
 //!
-//! This module is cross-platform and pure (string-in, strings-out), so the
+//! The module is cross-platform and pure (string-in, strings-out), so the
 //! parser tests run on Linux CI rather than being Windows-only.
 
 use tracing_subscriber::filter::Directive;

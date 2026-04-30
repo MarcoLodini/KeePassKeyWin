@@ -163,7 +163,6 @@ pub(crate) mod imp {
     /// never held across `sta_block_on` waits (doing so would deadlock a
     /// re-entrant COM dispatch on the same STA thread).
     pub struct KeePassKeyWinAuthenticatorState {
-        #[allow(dead_code)]
         pub session_id: u32,
         pub pipe: Option<PipeClient>,
     }

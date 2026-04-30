@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-plugin:
+    name: Build Plugin DLL
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build KeePassKeyWin.Core (net48, Release)
+        run: dotnet build src/KeePassKeyWin.Core/KeePassKeyWin.Core.csproj -f net48 -c Release --nologo
+
+      - name: Build KeePassKeyWin.Plugin (net48, Release)
+        run: dotnet build src/KeePassKeyWin.Plugin/KeePassKeyWin.Plugin.csproj -f net48 -c Release --nologo
+
+      - name: Collect plugin DLLs
+        run: |
+          $src = "src\KeePassKeyWin.Plugin\bin\Release\net48"
+          $out = "plugin-out"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Get-ChildItem -Path $src -Filter "KeePassKeyWin.*.dll" -File | Copy-Item -Destination $out
+          Compress-Archive -Path "$out\*" -DestinationPath "KeePassKeyWin.Plugin.zip" -CompressionLevel Optimal
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeePassKeyWin.Plugin
+          path: KeePassKeyWin.Plugin.zip
+
+  build-and-sign-msix:
+    name: Build + sign MSIX
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust stable + Windows target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/KeePassKeyWin.Provider
+          key: release-msix
+
+      - name: Build provider (Windows-native, release)
+        run: cargo build --release
+        working-directory: src/KeePassKeyWin.Provider
+
+      - name: Build MSIX
+        run: .\scripts\build-msix.ps1
+
+      - name: Upload unsigned MSIX
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeePassKeyWin.Provider-unsigned
+          path: out\KeePassKeyWin.Provider.msix
+
+      - name: Submit to SignPath
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: keepasskeywin
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out-signed
+
+      - name: Locate signed MSIX
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if (Test-Path "out-signed\KeePassKeyWin.Provider.msix") {
+            Copy-Item "out-signed\KeePassKeyWin.Provider.msix" "out\KeePassKeyWin.Provider.msix"
+          } else {
+            # SignPath may append a suffix or hash — find any .msix
+            $signed = Get-ChildItem -Path "out-signed" -Filter "*.msix" -Recurse | Select-Object -First 1
+            if ($signed) {
+              Copy-Item $signed.FullName "out\KeePassKeyWin.Provider.msix"
+            } else {
+              Write-Warning "Signed MSIX not found in out-signed/ — falling back to unsigned"
+            }
+          }
+
+      - name: Upload signed MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeePassKeyWin.Provider-signed
+          path: out\KeePassKeyWin.Provider.msix
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-plugin, build-and-sign-msix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download plugin artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: KeePassKeyWin.Plugin
+          path: release-assets
+
+      - name: Download signed MSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: KeePassKeyWin.Provider-signed
+          path: release-assets
+
+      - name: List release assets
+        run: ls -la release-assets/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "See CHANGELOG.md and docs/DISTRIBUTION.md for details." \
+            release-assets/*
+

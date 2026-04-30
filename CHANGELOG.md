@@ -70,6 +70,37 @@ people upgrading mid-development.
 - `docs/ARCHITECTURE.md` § "Trust boundaries and signature verification"
   — fuller treatment of both gates, op-sign-pubkey provenance, and the
   5.UV.5 / 5.UV.7 trade-offs (Phase 5.UV.6).
+- **Release workflow and code-signing pipeline** (Phase 6). New
+  `.github/workflows/release.yml` triggered on `v*` tag pushes: builds the
+  plugin DLL (net48 Release on Windows runner), builds the sidecar MSIX
+  (native `cargo build` + `makeappx`), submits the unsigned MSIX to
+  **SignPath Foundation** (free OSS Authenticode signing) for approval,
+  downloads the signed MSIX, then creates a GitHub Release with both
+  artifacts. SignPath signing is gated on `v*` tags only; the workflow
+  pauses for manual approval in the SignPath dashboard. See
+  `docs/DISTRIBUTION.md` for the full setup guide and release instructions.
+- `.signpath/artifact-configurations/default.xml` — SignPath artifact
+  configuration declaring MSIX as the signing format.
+- `docs/DISTRIBUTION.md` — distribution architecture documentation covering
+  the two-artifact model, SignPath Foundation setup, user installation
+  instructions, release process (maintainer), and GPG signature workflow.
+
+- **CI: Windows-target compile + clippy gates** (Phase 5.UV.9.7, also
+  closes the 5.UV.9.5 tail). New `windows-cross` job in
+  `.github/workflows/ci.yml` runs `cargo xwin clippy --target
+  x86_64-pc-windows-msvc --release --all-targets -- -D warnings`
+  followed by `cargo xwin test --no-run --target
+  x86_64-pc-windows-msvc --all-targets` on the Ubuntu runner. The test
+  step uses `--no-run` (no Windows runner is available) — the goal is
+  to catch the class of regression that hid the `coset` dev-dep gap in
+  the `make_credential_cbor` `#[cfg(windows)] + #[cfg(test)]` fixture
+  for years (Linux CI cfg's it out; `cargo xwin build` doesn't compile
+  tests). The clippy step makes the Windows-target lint hygiene that
+  5.UV.9.5 just stabilised a permanent gate. Job uses
+  `taiki-e/install-action` for cargo-xwin (prebuilt binary), pins
+  `XWIN_ACCEPT_LICENSE=1` for non-interactive MSVC SDK EULA, and caches
+  `~/.cache/cargo-xwin` (~600MB SDK download) separately from
+  `target/` so the cold-start cost is paid once.
 
 ### Changed
 
