@@ -151,16 +151,15 @@ Sub-phases:
 
 ## Phase 6 — Distribution ✅ GREEN 2026-04-30
 
-Distribution pipeline ships the sidecar as a SignPath-signed MSIX (Authenticode)
+Distribution pipeline ships the sidecar as a self-signed MSIX (Authenticode)
 alongside the plugin DLL as a GitHub Release asset.
 
-- [x] Code-signing decision: **SignPath Foundation** (free OSS Authenticode signing).
-      Certificate issued to SignPath Foundation; chains to Microsoft Trusted Root Program CA.
-- [x] `.signpath/artifact-configurations/default.xml` — artifact config declaring MSIX format.
+- [x] Code-signing decision: **Self-signed certificate** (dev cert for development builds).
+      Certificate generated via `ensure-dev-cert.ps1`; trusts local machine only.
 - [x] `.github/workflows/release.yml` — triggered on `v*` tag pushes. Three jobs:
-      `build-plugin` (Windows), `build-and-sign-msix` (Windows → SignPath → signed),
-      `create-release` (Ubuntu). SignPath step pauses for manual approval via dashboard.
-- [x] `docs/DISTRIBUTION.md` — distribution architecture, SignPath setup guide,
+      `build-plugin` (Windows), `build-and-sign-msix` (Windows → self-signed),
+      `create-release` (Ubuntu). Signing is automated via CI secrets.
+- [x] `docs/DISTRIBUTION.md` — distribution architecture, self-signed cert setup guide,
       user install instructions, release process, GPG signature workflow.
 - [ ] GitHub release with artifacts (first tagged release — after Phase 3.1 polish and
       remaining open-source readiness items are resolved).

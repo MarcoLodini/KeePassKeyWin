@@ -80,34 +80,25 @@ jobs:
           name: KeePassKeyWin.Provider-unsigned
           path: out\KeePassKeyWin.Provider.msix
 
-      - name: Submit to SignPath
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: keepasskeywin
-          signing-policy-slug: release-signing
-          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: out-signed
-
-      - name: Locate signed MSIX
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Self-sign MSIX (dev cert)
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          DEV_CERTIFICATE: ${{ secrets.DEV_CERTIFICATE }}
+          DEV_CERTIFICATE_PASSWORD: ${{ secrets.DEV_CERTIFICATE_PASSWORD }}
         run: |
-          if (Test-Path "out-signed\KeePassKeyWin.Provider.msix") {
-            Copy-Item "out-signed\KeePassKeyWin.Provider.msix" "out\KeePassKeyWin.Provider.msix"
+          if ($env:DEV_CERTIFICATE) {
+            $pfxBase64 = $env:DEV_CERTIFICATE
+            $pfxPath = Join-Path $env:RUNNER_TEMP "KeePassKeyWin.Dev.pfx"
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($pfxBase64))
+            $ss = ConvertTo-SecureString -String $env:DEV_CERTIFICATE_PASSWORD -AsPlainText -Force
+            .\scripts\sign-msix.ps1 -PfxPath $pfxPath -MsixPath out\KeePassKeyWin.Provider.msix -PfxPassword $ss
+            Write-Host "MSIX signed with self-signed dev certificate."
           } else {
-            # SignPath may append a suffix or hash — find any .msix
-            $signed = Get-ChildItem -Path "out-signed" -Filter "*.msix" -Recurse | Select-Object -First 1
-            if ($signed) {
-              Copy-Item $signed.FullName "out\KeePassKeyWin.Provider.msix"
-            } else {
-              Write-Warning "Signed MSIX not found in out-signed/ — falling back to unsigned"
-            }
+            Write-Warning "DEV_CERTIFICATE secret not configured — MSIX is unsigned."
           }
 
-      - name: Upload signed MSIX artifact
+      - name: Upload MSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: KeePassKeyWin.Provider-signed

@@ -1,19 +1,10 @@
 # KeePassKeyWin — To Do
 
-## SignPath Foundation setup (one-time, pre-first-release)
+## Self-signed certificate setup (one-time, pre-first-release)
 
-- [ ] **Apply** at <https://signpath.io/product/open-source>
-      (1–3 business days for approval; have repo URL + description ready)
-
-- [ ] **Configure SignPath dashboard** after approval:
-  - Create project `keepasskeywin`, link GitHub repo
-  - Create signing policy `release-signing`, restrict to `master` + `release/*` branches
-  - Add the artifact config from `.signpath/artifact-configurations/default.xml`
-  - Link Trusted Build System: `GitHub.com`
+- [ ] **Generate development certificate** by running `ensure-dev-cert.ps1`
+      (creates a self-signed PFX trusted on the local machine).
 
 - [ ] **Add GitHub repo secrets**:
-  - `SIGNPATH_API_TOKEN` — generated from SignPath dashboard
-  - `SIGNPATH_ORGANIZATION_ID` — visible in SignPath dashboard (click org name)
-
-- [ ] **Install SignPath GitHub App** on the repo
-      (SignPath dashboard will prompt you after project creation)
+  - `DEV_CERTIFICATE` — Base64-encoded PFX contents
+  - `DEV_CERTIFICATE_PASSWORD` — password used when generating the PFX
