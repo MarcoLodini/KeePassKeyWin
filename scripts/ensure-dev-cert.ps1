@@ -186,4 +186,16 @@ Write-Host "[ensure-dev-cert] LocalMachine\TrustedPeople: OK ($($cert.Thumbprint
 Write-Host "[ensure-dev-cert] PFX file:                   $PfxPath"
 Write-Host ''
 Write-Host "[ensure-dev-cert] PASS Subject='$Subject' Thumbprint=$($cert.Thumbprint)" -ForegroundColor Green
+
+# ---------------------------------------------------------------------------
+# Step 6/6 — Print GitHub secrets instructions
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '[ensure-dev-cert] --- Step 6/6: GitHub secrets instructions ---'
+Write-Host ''
+Write-Host 'To add to GitHub secrets:'
+Write-Host '  1. Go to https://github.com/<owner>/<repo>/settings/secrets/actions'
+Write-Host '  2. Add secret DEV_CERTIFICATE with the base64-encoded PFX content'
+Write-Host '  3. Add secret DEV_CERTIFICATE_PASSWORD with the PFX password'
+Write-Host ''
 exit 0
