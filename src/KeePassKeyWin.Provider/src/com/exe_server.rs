@@ -145,7 +145,7 @@ pub(crate) mod imp {
         this: *mut ClassFactory, _outer: *mut c_void, riid: *const GUID, ppv: *mut *mut c_void,
     ) -> HRESULT {
         macro_rules! dbg_step { ($($arg:tt)*) => {
-            tracing::debug!("[activate] {}", format_args!($($arg)*))
+            tracing::info!("[activate] {}", format_args!($($arg)*))
         } }
 
         let session_id = unsafe { (*this).session_id };
@@ -184,30 +184,13 @@ pub(crate) mod imp {
                 // wins, the second gets HandshakeInvalid and drops the pipe.
                 // Not a v1 concern — browsers don't register concurrently.
                 // Documented in docs/IPC_PROTOCOL.md.
+                //
+                // Implementation shares `connect_and_handshake` with the
+                // 5.UV.8 inline stale-pipe retry path (server::take_call_with_retry)
+                // — DRY between activation and retry, single failure mode
+                // catalog, single set of breadcrumbs.
                 let pipe = runtime.block_on(async {
-                    let mut p = match crate::ipc::PipeClient::connect(session_id).await {
-                        Ok(p)  => { dbg_step!("pipe connect OK"); p }
-                        Err(e) => { dbg_step!("pipe connect FAILED: {e}"); return None; }
-                    };
-                    let nonce = match read_handshake_nonce() {
-                        Some(n) => {
-                            let prefix: String = n.chars().take(8).collect();
-                            dbg_step!("read nonce from HKCU: \"{prefix}...\" ({} chars)", n.len());
-                            n
-                        }
-                        None => {
-                            dbg_step!("read nonce FAILED — HKCU\\Software\\KeePassKeyWin\\HandshakeNonce missing");
-                            return None;
-                        }
-                    };
-                    // 5.UV.4: opSignPublicKeyB64 is now required by the plugin.
-                    // Fetch the key bytes before sending hello; if unavailable,
-                    // handshake() returns Err and the activation fails gracefully.
-                    let pub_key = crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
-                    match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce, pub_key).await {
-                        Ok(())  => { dbg_step!("handshake OK"); Some(p) }
-                        Err(e)  => { dbg_step!("handshake FAILED: {e:?}"); None }
-                    }
+                    connect_and_handshake(session_id, "[activate]").await.ok()
                 });
 
                 // Only cache in SHARED_STATE when the handshake actually
@@ -267,13 +250,19 @@ pub(crate) mod imp {
 
     /// Read the current handshake nonce from
     /// `HKCU\Software\KeePassKeyWin\HandshakeNonce`. The plugin writes it on
-    /// startup and rotates on each successful consume. Returns `None` on
-    /// any error (missing key, wrong type, registry failure) — the caller
-    /// treats a missing nonce the same as a handshake failure.
-    pub(crate) fn read_handshake_nonce() -> Option<String> {
+    /// startup and rotates on each successful consume.
+    ///
+    /// Returns `Ok(nonce_string)` on success or a [`crate::com::reg_read_error::RegReadError`]
+    /// variant that faithfully describes the failure reason so `connect_and_handshake`
+    /// can emit a precise log message and error (5.UV.9). Uses `RRF_RT_ANY`
+    /// (no built-in type filter) so the value-type out-param is populated even
+    /// when `RegGetValueW` succeeds — enabling `WrongType` detection without a
+    /// second registry call.
+    pub(crate) fn read_handshake_nonce() -> Result<String, crate::com::reg_read_error::RegReadError> {
+        use crate::com::reg_read_error::{lstatus_to_reg_read_error, RegReadError};
         use windows::core::PCWSTR;
         use windows::Win32::System::Registry::{
-            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ,
+            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_ANY, REG_VALUE_TYPE, REG_SZ,
         };
 
         let sub_key: Vec<u16>    = "Software\\KeePassKeyWin\0".encode_utf16().collect();
@@ -282,25 +271,158 @@ pub(crate) mod imp {
         // Nonce is 64 hex chars + null = 130 bytes. 512 is plenty.
         let mut buf: [u16; 256] = [0u16; 256];
         let mut cb: u32 = (buf.len() * 2) as u32;
+        // Capture the actual REG type so we can detect wrong-type on success.
+        // Using RRF_RT_ANY (no built-in filter) ensures pdwType is populated
+        // regardless of the actual type; we verify REG_SZ ourselves below.
+        let mut actual_type = REG_VALUE_TYPE(0u32);
 
         let status = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
                 PCWSTR(sub_key.as_ptr()),
                 PCWSTR(value_name.as_ptr()),
-                RRF_RT_REG_SZ,
-                None,
+                RRF_RT_ANY,
+                Some(&mut actual_type),
                 Some(buf.as_mut_ptr() as *mut _),
                 Some(&mut cb),
             )
         };
+
         if status.is_err() {
-            return None;
+            // status.0 is the raw WIN32_ERROR u32; cast to i32 for the mapper.
+            return Err(lstatus_to_reg_read_error(status.0 as i32));
         }
+
+        // Read succeeded but we must verify the type ourselves (RRF_RT_ANY).
+        if actual_type != REG_SZ {
+            return Err(RegReadError::WrongType { actual_type: actual_type.0 });
+        }
+
         // cb is bytes written including the trailing UTF-16 null.
         let wchars = (cb as usize) / 2;
         let end = buf[..wchars].iter().position(|&c| c == 0).unwrap_or(wchars);
-        String::from_utf16(&buf[..end]).ok()
+        // Mapping `from_utf16` failure to `Other(0)` would log "LSTATUS 0x00000000"
+        // (= ERROR_SUCCESS) — a self-contradicting message. `MalformedString`
+        // is its own variant so the log line names the actual fault.
+        String::from_utf16(&buf[..end]).map_err(|_| RegReadError::MalformedString)
+    }
+
+    /// Connect the plugin pipe and complete the `keepasskeywin.hello`
+    /// handshake. Shared between first-activation (`cf_create_instance`) and
+    /// the 5.UV.8 inline stale-pipe retry path (`server::take_call_with_retry`).
+    ///
+    /// Each step (pipe connect → nonce read → handshake) emits a tracing
+    /// breadcrumb under the caller-supplied `log_prefix` so the unified
+    /// failure-mode catalog reads naturally in `sidecar.log`. Production
+    /// call sites currently pass `"[activate]"` (first-activation),
+    /// `"[dispatch]"` (dispatch-time retry), `"[cancel]"` (cancel-time
+    /// retry), and `"[lock-status]"` (getLockStatus-time retry); other
+    /// `&'static str` prefixes are accepted. Tracing levels: `info!` for
+    /// success and pipe-connect / nonce-read failures (which are
+    /// "plugin-not-running-yet" signals during normal startup); `warn!` for
+    /// handshake-protocol failure (PFN mismatch, plugin sig-verify reject,
+    /// op-sign-key absence) — that's a *protocol* fault rather than a
+    /// connectivity fault, so it deserves heightened visibility.
+    ///
+    /// The 5.UV.4 op-signing public-key requirement is enforced internally —
+    /// `handshake()` returns `Err(InvalidRequest)` when the key is unavailable.
+    ///
+    /// `log_prefix` is `&'static str` rather than `&str` because the helper
+    /// is called inside futures driven by `runtime.block_on` and `sta_block_on`,
+    /// both of which require `'static` futures (the latter additionally
+    /// requires `Send`). Production call sites pass string literals, so
+    /// this constraint is invisible.
+    pub(crate) async fn connect_and_handshake(
+        session_id: u32,
+        log_prefix: &'static str,
+    ) -> Result<crate::ipc::PipeClient, crate::ipc::ClientError> {
+        use crate::ipc::ClientError;
+
+        let mut p = match crate::ipc::PipeClient::connect(session_id).await {
+            Ok(p) => {
+                tracing::info!("{log_prefix} pipe connect OK");
+                p
+            }
+            Err(e) => {
+                tracing::info!("{log_prefix} pipe connect FAILED: {e}");
+                return Err(e);
+            }
+        };
+
+        let nonce = match read_handshake_nonce() {
+            Ok(n) => {
+                let prefix: String = n.chars().take(8).collect();
+                tracing::info!(
+                    "{log_prefix} read nonce from HKCU: \"{prefix}...\" ({} chars)",
+                    n.len()
+                );
+                n
+            }
+            Err(e) => {
+                use crate::com::reg_read_error::RegReadError;
+                // 5.UV.9: map each variant to a faithful message so the log
+                // line and error string accurately describe the root cause.
+                let reason = match &e {
+                    RegReadError::NotFound =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce not found".to_string(),
+                    RegReadError::WrongType { actual_type } =>
+                        format!(
+                            "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce wrong value type \
+                             0x{actual_type:x} (expected REG_SZ 0x1)"
+                        ),
+                    RegReadError::AccessDenied =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce access denied".to_string(),
+                    RegReadError::BufferTooSmall =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce buffer too small".to_string(),
+                    RegReadError::MalformedString =>
+                        "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce contains invalid UTF-16 data".to_string(),
+                    RegReadError::Other(code) =>
+                        format!(
+                            "HKCU\\Software\\KeePassKeyWin\\HandshakeNonce LSTATUS 0x{:08x}",
+                            *code as u32
+                        ),
+                };
+                tracing::info!("{log_prefix} read nonce FAILED — {reason}");
+                return Err(ClientError::InvalidRequest(reason));
+            }
+        };
+
+        // 5.UV.4: opSignPublicKeyB64 is required by the plugin. Fetch the key
+        // bytes before sending hello; if unavailable, handshake() returns
+        // Err(InvalidRequest) and we propagate it.
+        let pub_key = crate::com::request_sig::get_op_sign_pub_key_bytes_for_hello();
+        match p.handshake(KEEPASSKEYWIN_PKG_FAMILY, &nonce, pub_key).await {
+            Ok(()) => {
+                tracing::info!("{log_prefix} handshake OK");
+                Ok(p)
+            }
+            Err(e) => {
+                // `warn!` (not `info!`) — handshake failure with a fresh
+                // pipe signals a *protocol* fault: PFN mismatch, plugin
+                // sig-verify rejection, or op-sign-key absence. Distinct
+                // from connect/nonce failures, which are normal-startup
+                // "plugin not ready yet" signals at `info!`.
+                tracing::warn!("{log_prefix} handshake FAILED: {e:?}");
+                Err(e)
+            }
+        }
+    }
+
+    /// Clear the process-wide `SHARED_STATE` slot. Called from the 5.UV.8
+    /// retry helper (`server::take_call_with_retry`) when reconnect+rehandshake
+    /// fails on a retry — without this, the next COM activation would reuse
+    /// a half-dead `Arc` whose inner pipe is permanently `None` (the
+    /// unconditional `.take()` at the entry of `take_call_with_retry`
+    /// happens *before* the retry decision is made, so the surviving Arc
+    /// has `pipe = None` regardless of retry outcome).
+    ///
+    /// Race-safety: in-flight dispatches hold their own `Arc` clones; this
+    /// function only drops the slot's clone. `strong_count` does not reach
+    /// zero just because this slot is cleared. Goes through the generic
+    /// `classify_rpc_error::clear_slot` so the underlying logic is exercised
+    /// by Linux-CI unit tests with a stub `T`.
+    pub(crate) fn clear_shared_state() {
+        crate::com::classify_rpc_error::clear_slot(&SHARED_STATE);
     }
 
     unsafe extern "system" fn cf_lock_server(_this: *mut ClassFactory, lock: i32) -> HRESULT {
@@ -426,7 +548,7 @@ pub(crate) mod imp {
                 Err(_) => { skipped_parse += 1; continue; }
             };
 
-            if os_ids.iter().any(|id| *id == cred_id_bytes) {
+            if os_ids.contains(&cred_id_bytes) {
                 continue; // already known to OS
             }
 
@@ -487,9 +609,9 @@ pub(crate) mod imp {
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).ok()
             }).collect();
 
-            for i in 0..os_count as usize {
-                if os_ids[i].is_empty() { continue; }
-                if vault_ids.iter().any(|id| *id == os_ids[i]) {
+            for (i, os_id) in os_ids.iter().enumerate() {
+                if os_id.is_empty() { continue; }
+                if vault_ids.contains(os_id) {
                     continue; // still in vault
                 }
 
@@ -535,6 +657,12 @@ pub(crate) mod imp {
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
+
+// 5.UV.8: shared connect+handshake helper and SHARED_STATE clearer, used by
+// `com::server::take_call_with_retry`. Re-exported at module level so the
+// retry path doesn't need to reach into `imp`.
+#[cfg(windows)]
+pub(crate) use imp::{clear_shared_state, connect_and_handshake};
 
 /// Run the EXE as an out-of-process COM class factory (STA).
 ///
@@ -830,7 +958,7 @@ pub fn cmd_register() -> Result<(), String> {
         ppwsz_supported_rp_ids:    std::ptr::null(),
     };
 
-    // Dump the full state we're about to pass to webauthn.dll (RUST_LOG=debug to see).
+    // Dump the full state we're about to pass to webauthn.dll (KEEPASSKEYWIN_LOG_LEVEL=debug to see).
     let resolved_symbol = webauthn_ext::resolved_add_symbol_name().unwrap_or("<bindings not loaded>");
     tracing::debug!("[register] ==== diagnostic dump ====");
     tracing::debug!("[register] Resolved symbol: {resolved_symbol}");
@@ -851,12 +979,16 @@ pub fn cmd_register() -> Result<(), String> {
     let mut response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
         = std::ptr::null_mut();
 
-    let hr = webauthn_ext::add_authenticator(&opts, &mut response_ptr)?;
+    // SAFETY: response_ptr is initialized to null_mut() above; Windows writes
+    // the response pointer on S_OK. We free it immediately after via
+    // free_add_authenticator_response (which is a no-op on null).
+    let hr = unsafe { webauthn_ext::add_authenticator(&opts, &mut response_ptr) }?;
 
     // Free the response BEFORE error-handling so the op-signing key is
     // never leaked, even on partial-success HRESULTs.
     // free_add_authenticator_response is a no-op on null.
-    webauthn_ext::free_add_authenticator_response(response_ptr);
+    // SAFETY: response_ptr is either null or the pointer written by add_authenticator.
+    unsafe { webauthn_ext::free_add_authenticator_response(response_ptr) };
 
     if hr.0 as u32 == HR_NTE_EXISTS {
         tracing::info!(
@@ -865,12 +997,15 @@ pub fn cmd_register() -> Result<(), String> {
 
         // Best-effort unregister. If it fails (shouldn't), the retry will
         // surface the real error code.
-        let _ = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _);
+        // SAFETY: &CLSID_GUID is a valid non-null pointer to the registered CLSID.
+        let _ = unsafe { webauthn_ext::remove_authenticator(&CLSID_GUID as *const _) };
 
         let mut retry_response_ptr: *mut crate::com::types::WebauthnPluginAddAuthenticatorResponse
             = std::ptr::null_mut();
-        let hr_retry = webauthn_ext::add_authenticator(&opts, &mut retry_response_ptr)?;
-        webauthn_ext::free_add_authenticator_response(retry_response_ptr);
+        // SAFETY: retry_response_ptr initialized to null_mut(); freed immediately below.
+        let hr_retry = unsafe { webauthn_ext::add_authenticator(&opts, &mut retry_response_ptr) }?;
+        // SAFETY: retry_response_ptr is either null or the pointer written by add_authenticator.
+        unsafe { webauthn_ext::free_add_authenticator_response(retry_response_ptr) };
 
         if hr_retry.is_err() {
             return Err(format!(
@@ -913,7 +1048,8 @@ pub fn cmd_unregister() -> Result<(), String> {
     const HR_NOT_FOUND:      u32 = 0x8007_0490;
     const HR_FILE_NOT_FOUND: u32 = 0x8007_0002;
 
-    let hr = webauthn_ext::remove_authenticator(&CLSID_GUID as *const _)?;
+    // SAFETY: &CLSID_GUID is a valid non-null pointer to our registered CLSID.
+    let hr = unsafe { webauthn_ext::remove_authenticator(&CLSID_GUID as *const _) }?;
 
     match hr.0 as u32 {
         0 => {

@@ -1,12 +1,15 @@
 # KeePassKeyWin
 
+[![CI](https://github.com/MarcoLodini/KeePassKeyWin/actions/workflows/ci.yml/badge.svg)](https://github.com/MarcoLodini/KeePassKeyWin/actions/workflows/ci.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+
 KeePass 2.x plugin that turns KeePass into a first-class Windows passkey provider.
 
 Create, store, and use FIDO2 / WebAuthn passkeys inside your KeePass vault. Integrated with Windows' Plug-in Authenticator API so any browser or native app on the system can consume them.
 
 ## Status
 
-Pre-release. End-to-end passkey register and login work on Windows 11 25H2 (build 26200.8037) with real browser sessions at webauthn.io — 220 .NET and 54 Rust tests all green. There is no signed MSIX installer or packaged distribution yet; this is developer-accessible code, not a product release. See [`docs/PLAN.md`](docs/PLAN.md) for phased progress and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
+Pre-release. End-to-end passkey register and login work on Windows 11 25H2 (build 26200.8037) with real browser sessions at webauthn.io — 271 .NET and 101 Rust tests all green. There is no signed MSIX installer or packaged distribution yet; this is developer-accessible code, not a product release. See [`docs/PLAN.md`](docs/PLAN.md) for phased progress, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, and [`docs/DISTRIBUTION.md`](docs/DISTRIBUTION.md) for the planned installation model.
 
 ## Requirements
 
@@ -72,6 +75,16 @@ dotnet build src/KeePassKeyWin.Harness -c Release
 dotnet test --nologo
 ```
 
+### Provider sidecar (Rust)
+
+See [`src/KeePassKeyWin.Provider/README.md`](src/KeePassKeyWin.Provider/README.md) for Rust build instructions, cross-compilation with `cargo-xwin`, and MSIX packaging.
+
 ## License
 
 GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+
+## Additional resources
+
+- [Contributing guide](CONTRIBUTING.md) — build prerequisites, code conventions, PR workflow
+- [Security policy](SECURITY.md) — vulnerability disclosure and supported versions
+- [Changelog](CHANGELOG.md) — release history and notable changes

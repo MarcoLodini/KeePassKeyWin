@@ -31,6 +31,22 @@
 //! Which tier resolved is returned alongside every UV call result so the IPC
 //! layer can forward it to the plugin (for the 5.UV.4 fallback-warning dialog).
 //!
+//! ## Phase 5.UV.7: Call-time v2→v1 fallback on E_NOTIMPL
+//!
+//! On Windows 11 24H2 build 26100.6725+ (KB5068861, Nov 2025) the stable
+//! `WebAuthNPluginPerformUserVerification2` export resolves at load time but
+//! returns `E_NOTIMPL` (0x80004001) at call time — Microsoft shipped the symbol
+//! before the implementation. The load-time triple-fallback (5.UV.3) is therefore
+//! insufficient on this OS version: picking the resolved stable name commits us to
+//! a doomed call.
+//!
+//! The fix is a call-time fallback: when v2 returns E_NOTIMPL, the helper falls
+//! through to v1 in the same dispatch and caches the decision so subsequent
+//! dispatches skip the wasted v2 call. The cache is per-process (one-way latch
+//! — set on first E_NOTIMPL, never cleared); a fresh COM activation re-probes
+//! so a future Windows update that ships the real implementation is adopted
+//! automatically once it returns S_OK.
+//!
 //! ## Debug override: `KEEPASSKEYWIN_FORCE_UV_V1=1`
 //!
 //! The triple-fallback lookup makes the v1 path unreachable on any Windows
@@ -43,6 +59,7 @@
 #![cfg(windows)]
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::core::{HRESULT, PCSTR, PCWSTR};
 use windows::Win32::Foundation::HMODULE;
@@ -127,12 +144,13 @@ type PfnFreeUvResponse = unsafe extern "system" fn(*mut u8);
 /// stabilises the `_2` form or adds a `_3` variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UvTier {
-    /// `WebAuthNPluginPerformUserVerification2` resolved (stable name —
-    /// may not exist on current 24H2 builds; coded for future stabilisation).
+    /// `WebAuthNPluginPerformUserVerification2` resolved (stable name).
+    /// On Windows 11 24H2 build 26100.6725+ (KB5068861, Nov 2025) this symbol
+    /// resolves at load time but returns E_NOTIMPL at call time — the 5.UV.7
+    /// call-time fallback detects this and falls through to v1 in the same
+    /// dispatch, reporting the final tier as `V1`.
     V2Stable,
     /// `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` resolved.
-    /// This is the tier that resolves on Windows 11 24H2 build 26100.6725+
-    /// (KB5068861, Nov 2025) at time of writing.
     V2Experimental,
     /// Only `WebAuthNPluginPerformUserVerification` (v1) resolved.
     /// The UV response signature is still returned by Windows but was NOT
@@ -169,6 +187,13 @@ struct WebauthnBindings {
     /// is `None`; one of the `V2*` variants when it is `Some`.
     perform_uv_tier: UvTier,
     free_uv_response: PfnFreeUvResponse,
+    /// Set true after the first v2 call returned E_NOTIMPL — subsequent dispatches
+    /// short-circuit to v1 without paying the wasted v2 call. Per-process cache;
+    /// a fresh COM activation re-probes (Microsoft may ship the v2 implementation
+    /// in a future Windows update). Only E_NOTIMPL poisons this — other errors
+    /// (E_FAIL, E_ABORT, E_INVALIDARG) leave it false because they reflect
+    /// transient or per-request failures, not API absence.
+    v2_unimplemented: AtomicBool,
     /// Which symbol name was resolved for `add` — diagnostic only. Stored
     /// as a static string so we can report it even after the call crashes.
     add_symbol_name: &'static str,
@@ -191,7 +216,11 @@ static BINDINGS: OnceLock<Result<WebauthnBindings, String>> = OnceLock::new();
 /// On failure every subsequent call returns the same error; no retry.
 ///
 /// For `PerformUserVerification`, a triple-fallback runs in order:
-///   1. `WebAuthNPluginPerformUserVerification2` (stable v2 — may not resolve)
+///   1. `WebAuthNPluginPerformUserVerification2` (stable v2 — resolves on
+///      Win11 24H2 26100.6725+ but returns E_NOTIMPL at call time on builds
+///      where Microsoft's implementation is still a forward-declared stub;
+///      `perform_user_verification_2` handles this via the 5.UV.7 call-time
+///      fallback to v1)
 ///   2. `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2` (experimental v2)
 ///   3. `WebAuthNPluginPerformUserVerification` (v1 — always the final fallback)
 fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
@@ -245,13 +274,14 @@ fn bindings() -> Result<&'static WebauthnBindings, &'static str> {
         ])?;
 
         Ok(WebauthnBindings {
-            add:              unsafe { std::mem::transmute::<_, PfnAdd>(add) },
-            remove:           unsafe { std::mem::transmute::<_, PfnRemove>(rem) },
-            free_response:    unsafe { std::mem::transmute::<_, PfnFreeResponse>(free) },
-            perform_uv:       unsafe { std::mem::transmute::<_, PfnPerformUv>(perform_uv_raw) },
-            perform_uv_v2:    perform_uv_v2_raw.map(|p| unsafe { std::mem::transmute::<_, PfnPerformUv2>(p) }),
+            add:              unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnAdd>(add) },
+            remove:           unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnRemove>(rem) },
+            free_response:    unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnFreeResponse>(free) },
+            perform_uv:       unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnPerformUv>(perform_uv_raw) },
+            perform_uv_v2:    perform_uv_v2_raw.map(|p| unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnPerformUv2>(p) }),
             perform_uv_tier,
-            free_uv_response: unsafe { std::mem::transmute::<_, PfnFreeUvResponse>(free_uv) },
+            v2_unimplemented: AtomicBool::new(false),
+            free_uv_response: unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, PfnFreeUvResponse>(free_uv) },
             add_symbol_name:  add_name,
             perform_uv_symbol_name: uv2_name,
         })
@@ -275,6 +305,14 @@ pub fn resolved_add_symbol_name() -> Option<&'static str> {
 /// v1 symbol name when only v1 resolved. `None` until bindings are
 /// initialized (i.e. until the first [`perform_user_verification_2`] call).
 /// Diagnostic only — surfaced in the dispatch log for live-validation triage.
+///
+/// **Caveat (5.UV.7):** this reports the *load-time* resolved symbol. On
+/// builds where the stable v2 export is a forward-declared E_NOTIMPL stub,
+/// `perform_user_verification_2` falls through to v1 at call time but this
+/// function continues to return `"WebAuthNPluginPerformUserVerification2"`.
+/// Code that needs to know which entrypoint *actually completed* a dispatch
+/// must inspect the `UvTier` returned by `perform_user_verification_2` —
+/// that value reflects post-fallback reality, this function does not.
 pub fn resolved_perform_uv_symbol_name() -> Option<&'static str> {
     let _ = bindings();
     BINDINGS.get().and_then(|r| r.as_ref().ok()).map(|b| b.perform_uv_symbol_name)
@@ -312,7 +350,26 @@ fn get_proc(
 
 /// Call `EXPERIMENTAL_WebAuthNPluginAddAuthenticator`. On S_OK the caller
 /// must free `*pp_response` via [`free_add_authenticator_response`].
-pub fn add_authenticator(
+///
+/// # Safety
+/// - `pp_response` must be a valid, non-null pointer to writable
+///   `*mut WebauthnPluginAddAuthenticatorResponse` storage. On `S_OK`, Windows
+///   writes a heap-allocated response into `*pp_response`; the caller must free
+///   it via [`free_add_authenticator_response`] on every exit path (null is a
+///   no-op).
+/// - Every pointer field inside `opts` must be valid for the duration of the
+///   call. In particular: `opts.rclsid` is `REFCLSID` — a *pointer* to a valid
+///   `Guid`, NOT an inline GUID value. Passing inline GUID bytes shifts every
+///   subsequent struct field by +8 bytes, causing `STATUS_ACCESS_VIOLATION`
+///   in `webauthn.dll` (same trap as `perform_user_verification_2`'s `p_txid`;
+///   see `types.rs:140-205`). `opts.pwsz_authenticator_name`,
+///   `opts.pwsz_plugin_rp_id`, `opts.pwsz_light_theme_logo_svg`, and
+///   `opts.pwsz_dark_theme_logo_svg` must point to valid null-terminated UTF-16
+///   strings. `opts.pb_authenticator_info` must point to
+///   `opts.cb_authenticator_info` valid bytes. `opts.ppwsz_supported_rp_ids`,
+///   when `opts.c_supported_rp_ids > 0`, must point to an array of that many
+///   valid null-terminated UTF-16 strings.
+pub unsafe fn add_authenticator(
     opts: &WebauthnPluginAddAuthenticatorOptions,
     pp_response: *mut *mut WebauthnPluginAddAuthenticatorResponse,
 ) -> Result<HRESULT, String> {
@@ -322,14 +379,26 @@ pub fn add_authenticator(
 
 /// Call `WebAuthNPluginRemoveAuthenticator` with a pointer to the CLSID
 /// GUID (REFCLSID).
-pub fn remove_authenticator(rclsid: *const Guid) -> Result<HRESULT, String> {
+///
+/// # Safety
+/// - `rclsid` must be a valid, non-null pointer to a `Guid` (CLSID). The
+///   pointer is read by Windows during the call and must remain valid for its
+///   duration. Passing a null or dangling pointer is undefined behaviour.
+pub unsafe fn remove_authenticator(rclsid: *const Guid) -> Result<HRESULT, String> {
     let b = bindings().map_err(|s| s.to_string())?;
     Ok(unsafe { (b.remove)(rclsid) })
 }
 
 /// Call `EXPERIMENTAL_WebAuthNPluginFreeAddAuthenticatorResponse`. Safe to
 /// call on a null pointer (skips the FFI call).
-pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthenticatorResponse) {
+///
+/// # Safety
+/// - `p_response` must either be null (no-op) or a pointer returned by a prior
+///   successful call to [`add_authenticator`] (i.e. the value written into
+///   `*pp_response` when `add_authenticator` returned `S_OK`). Passing any
+///   other pointer is undefined behaviour. The pointer must not be used again
+///   after this call.
+pub unsafe fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthenticatorResponse) {
     if p_response.is_null() {
         return;
     }
@@ -340,22 +409,34 @@ pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthent
     }
 }
 
-/// Call the best-available `PerformUserVerification` entrypoint — v2 if it
-/// resolved, v1 otherwise — and return `(HRESULT, UvTier)`.
+// ── Pure helper functions (testable without FFI) ──────────────────────────────
+
+// 5.UV.7 fallback helpers live in `crate::com::uv_fallback` so they (and
+// their unit tests) compile on Linux CI — this parent module is
+// `#![cfg(windows)]` because of its FFI surface.
+use crate::com::uv_fallback::{observe_v2_result, should_fallback_to_v1};
+
+/// Call the best-available `PerformUserVerification` entrypoint — v2 with
+/// call-time E_NOTIMPL fallback to v1 — and return `(HRESULT, UvTier)`.
 ///
-/// ## Fallback behaviour
+/// ## Dispatch logic
 ///
-/// - **V2Stable / V2Experimental:** Builds a
-///   [`WebauthnPluginUserVerificationRequest2`] (48 bytes) with
-///   `cb_buffer_to_sign = buffer_to_sign.len()` and
-///   `pb_buffer_to_sign = buffer_to_sign.as_ptr()`. The buffer must remain
-///   live for the duration of the call (guaranteed when `buffer_to_sign` is
-///   a slice of a stack-allocated digest — SHA-256 output is 32 bytes).
-/// - **V1:** Builds a [`WebauthnPluginUserVerificationRequest`] (32 bytes);
-///   `buffer_to_sign` is **discarded** (v1 has no such field). The Windows
-///   runtime still returns an opaque UV response, but the plugin cannot
-///   verify it without the buffer-to-sign handshake. The `V1` tier in the
-///   returned pair signals this to the caller for IPC forwarding.
+/// 1. **Pre-check.** If `v2_unimplemented` cache is set OR `perform_uv_v2`
+///    is `None`, skip v2 entirely and call v1 directly. Returns `(hr, V1)`.
+/// 2. **Try v2.** Builds the 48-byte request and calls the v2 fn pointer.
+/// 3. **E_NOTIMPL from v2.** Sets `v2_unimplemented` (one-way latch), logs a
+///    warn, then calls v1 with the same 32-byte request shape. Returns `(hr, V1)`.
+///    The latch means subsequent dispatches skip step 2 entirely; it is only
+///    E_NOTIMPL that poisons the cache — transient errors leave it false.
+/// 4. **Any other v2 error.** Returns `(hr, b.perform_uv_tier)` unchanged.
+///    E_ABORT (user-cancel) is handled here — it must NOT trigger the v1
+///    fallback; the dispatcher's E_ABORT check fires on the returned HRESULT.
+/// 5. **v2 success (S_OK).** Returns `(hr, b.perform_uv_tier)` unchanged.
+///
+/// The `UvTier` returned reflects what was *actually* called on this dispatch.
+/// When the fallback fires, the dispatcher logs `tier=v1`, IPC params get
+/// `uvBindingTier="v1"`, and the plugin's 5.UV.4 v1-branch fires the fallback
+/// dialog. All downstream code is unchanged.
 ///
 /// ## REFGUID trap
 ///
@@ -372,7 +453,26 @@ pub fn free_add_authenticator_response(p_response: *mut WebauthnPluginAddAuthent
 /// the binding propagates the error code. The caller **MUST** free
 /// `*pp_response` via [`free_user_verification_response`] on every exit path
 /// after a successful call (non-null `*pp_response`).
-pub fn perform_user_verification_2(
+///
+/// # Safety
+/// - `p_txid` must be a valid, non-null pointer to a `Guid` (REFGUID). It is
+///   read by Windows during the synchronous UV call and must remain valid for
+///   the call's duration. Passing an inline GUID (not a pointer) shifts every
+///   subsequent struct field, causing `STATUS_ACCESS_VIOLATION`.
+/// - `pwsz_user` and `pwsz_hint`, when non-null, must point to valid
+///   null-terminated UTF-16 strings that remain live for the duration of the call.
+///   Null is accepted by the Windows runtime (displayed as empty).
+/// - `cb_response` must be a valid, non-null pointer to writable `u32` storage.
+///   On return, Windows writes the byte-count of the response buffer here. The
+///   `u32` itself is caller-owned and requires no deallocation.
+/// - `pp_response` must be a valid, non-null pointer to writable `*mut u8`
+///   storage. On `S_OK`, Windows writes a heap-allocated buffer into
+///   `*pp_response`; the caller must free it via
+///   [`free_user_verification_response`] on every exit path. `*pp_response`
+///   may be null on return (only meaningful when `*cb_response == 0`).
+/// - `buffer_to_sign` must be a valid slice for the duration of the call;
+///   Windows reads it as the data whose signature covers the UV response.
+pub unsafe fn perform_user_verification_2(
     hwnd:            isize,
     p_txid:          *const Guid,
     pwsz_user:       *const u16,
@@ -382,29 +482,88 @@ pub fn perform_user_verification_2(
     pp_response:     *mut *mut u8,
 ) -> Result<(HRESULT, UvTier), String> {
     let b = bindings().map_err(|s| s.to_string())?;
-    if let Some(pfn_v2) = b.perform_uv_v2 {
-        // v2 path: build the 48-byte request with buffer_to_sign.
-        let req2 = WebauthnPluginUserVerificationRequest2 {
-            hwnd,
-            p_transaction_id:  p_txid,
-            pwsz_username:     pwsz_user,
-            pwsz_display_hint: pwsz_hint,
-            cb_buffer_to_sign: buffer_to_sign.len() as u32,
-            pb_buffer_to_sign: buffer_to_sign.as_ptr(),
-        };
-        let hr = unsafe { pfn_v2(&req2 as *const _, cb_response, pp_response) };
-        Ok((hr, b.perform_uv_tier))
-    } else {
-        // v1 fallback: build the 32-byte request; buffer_to_sign discarded.
-        let req1 = WebauthnPluginUserVerificationRequest {
-            hwnd,
-            p_transaction_id:  p_txid,
-            pwsz_username:     pwsz_user,
-            pwsz_display_hint: pwsz_hint,
-        };
-        let hr = unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) };
-        Ok((hr, UvTier::V1))
+
+    // Pre-check: if v2 is known to be unimplemented (cached from a prior
+    // dispatch in this process) or no v2 symbol resolved, go straight to v1.
+    // (v1 invocation is the free function `invoke_v1` below — extracted from a
+    // closure because the defensive-cleanup write to `*pp_response` in the
+    // E_NOTIMPL fallback arm conflicts with the borrow checker's view of a
+    // closure capturing the same raw pointer.)
+    let Some(pfn_v2) = b.perform_uv_v2 else {
+        let hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
+        return Ok((hr, UvTier::V1));
+    };
+    if b.v2_unimplemented.load(Ordering::Relaxed) {
+        let hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
+        return Ok((hr, UvTier::V1));
     }
+
+    // Try v2: build the 48-byte request with buffer_to_sign.
+    let req2 = WebauthnPluginUserVerificationRequest2 {
+        hwnd,
+        p_transaction_id:  p_txid,
+        pwsz_username:     pwsz_user,
+        pwsz_display_hint: pwsz_hint,
+        cb_buffer_to_sign: buffer_to_sign.len() as u32,
+        pb_buffer_to_sign: buffer_to_sign.as_ptr(),
+    };
+    let hr = unsafe { pfn_v2(&req2 as *const _, cb_response, pp_response) };
+
+    // Update cache based on the v2 result. Only E_NOTIMPL flips the latch.
+    observe_v2_result(&b.v2_unimplemented, hr);
+
+    if should_fallback_to_v1(hr) {
+        // v2 returned E_NOTIMPL: Microsoft's stable export is unimplemented on
+        // this Windows build. Cache is already set by observe_v2_result above.
+        // Fall through to v1 in this same dispatch.
+        tracing::warn!(
+            "[uv] v2 returned E_NOTIMPL — falling back to v1 for this and \
+             all subsequent dispatches in this process"
+        );
+        // Defensive cleanup of v2 out-params before reusing them for v1.
+        // Microsoft's forward-declared E_NOTIMPL stub almost certainly bails
+        // without touching out-params, but the COM contract makes no such
+        // guarantee — and `perform_user_verification_2`'s own docs promise
+        // the caller can free `*pp_response` on every exit path. If a future
+        // partial implementation allocates and then returns E_NOTIMPL, v1's
+        // call below would overwrite the v2 pointer and leak the v2 buffer.
+        // Free here so the caller's free-on-exit only ever sees v1's output.
+        let v2_ptr = unsafe { *pp_response };
+        if !v2_ptr.is_null() {
+            free_user_verification_response(v2_ptr);
+            unsafe { *pp_response = std::ptr::null_mut(); }
+            unsafe { *cb_response = 0; }
+        }
+        let v1_hr = invoke_v1(b, hwnd, p_txid, pwsz_user, pwsz_hint, cb_response, pp_response);
+        return Ok((v1_hr, UvTier::V1));
+    }
+
+    // v2 returned S_OK or a non-E_NOTIMPL error — propagate as-is.
+    Ok((hr, b.perform_uv_tier))
+}
+
+/// Build the 32-byte v1 request and dispatch via `b.perform_uv`. Used by both
+/// the cache-hit / no-v2-symbol pre-check arm and the E_NOTIMPL fallback arm
+/// of `perform_user_verification_2`. Free function (not a closure on the
+/// parent) because the closure capture of `pp_response` conflicts with the
+/// fallback arm's defensive write to `*pp_response`.
+#[inline]
+fn invoke_v1(
+    b: &WebauthnBindings,
+    hwnd: isize,
+    p_txid: *const Guid,
+    pwsz_user: *const u16,
+    pwsz_hint: *const u16,
+    cb_response: *mut u32,
+    pp_response: *mut *mut u8,
+) -> HRESULT {
+    let req1 = WebauthnPluginUserVerificationRequest {
+        hwnd,
+        p_transaction_id:  p_txid,
+        pwsz_username:     pwsz_user,
+        pwsz_display_hint: pwsz_hint,
+    };
+    unsafe { (b.perform_uv)(&req1 as *const _, cb_response, pp_response) }
 }
 
 /// Call `WebAuthNPluginFreeUserVerificationResponse` (stable) or
@@ -414,7 +573,13 @@ pub fn perform_user_verification_2(
 /// `PerformUserVerification`. Safe to call on a null pointer.
 /// Should be called on EVERY exit path after a successful UV invocation —
 /// including error paths where the UV response is discarded.
-pub fn free_user_verification_response(pb_response: *mut u8) {
+///
+/// # Safety
+/// - `pb_response` must either be null (no-op) or a pointer obtained from
+///   `*pp_response` after a successful call to [`perform_user_verification_2`].
+///   Passing any other pointer (including a stale/double-freed pointer) is
+///   undefined behaviour. After this call the pointer must not be used again.
+pub unsafe fn free_user_verification_response(pb_response: *mut u8) {
     if pb_response.is_null() {
         return;
     }
@@ -422,3 +587,7 @@ pub fn free_user_verification_response(pb_response: *mut u8) {
         unsafe { (b.free_uv_response)(pb_response) };
     }
 }
+
+// 5.UV.7 fallback helpers + their unit tests live in
+// `crate::com::uv_fallback` so they compile on Linux CI. See that module for
+// the test suite covering the HRESULT classifier and cache mutation.

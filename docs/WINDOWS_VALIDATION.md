@@ -265,7 +265,7 @@ setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN "C:\KeePassKeyWin\plugin.log"
 After setting (machine scope is most reliable — see Step 6b on env
 inheritance), sign out and back in, then reproduce. The sidecar log
 captures every `tracing::*` event (binding init, UV tier resolution,
-IPC handshake, sig-verify failures); the plugin log captures every
+IPC handshake); the plugin log captures every
 `TraceLogger.WriteLine` site (handshake validation, `[uv-ingest]`,
 `[uv-verify]`, `[sig-verify]`).
 
@@ -275,11 +275,66 @@ Useful breadcrumbs to grep for:
 - `[uv-verify]` — plugin's per-op UV verification result.
 - `[handshake]` — hello frame validation.
 
-Unset both vars when done:
+The following activation/dispatch breadcrumbs are always visible at the default
+INFO level (no `KEEPASSKEYWIN_LOG_LEVEL` change needed):
+
+- `[activate] cf_create_instance session_id={n}` — sidecar woke up for this Windows session
+- `[activate] pipe connect OK | FAILED: {e}` — IPC pipe outcome
+- `[activate] read nonce from HKCU: "{prefix}..." ({n} chars)` / `read nonce FAILED` — handshake nonce visibility
+- `[activate] handshake OK | FAILED: {e:?}` — keepasskeywin.hello completed
+- `[dispatch] ENTRY method={m} cbor_len={n} request_type={...} cb_sig={n}` — dispatch arrived
+- `[dispatch] UV call ...`, `[dispatch] UV returned hr=0x... cb_response={n} tier={t}` — UV outcome
+- `[dispatch] RPC call ... | RPC returned | DONE ok` — plugin pipeline
+
+#### `KEEPASSKEYWIN_LOG_LEVEL` — controlling sidecar trace verbosity (Phase 5.UV.6+)
+
+> **Renamed in 5.UV.6.** This env var was called `RUST_LOG` in 5.UV.4.5–5.UV.5
+> (the `tracing` crate's default name); the rename to `KEEPASSKEYWIN_LOG_LEVEL`
+> in 5.UV.6 makes the variable scope obvious in `Get-ChildItem Env:KEEPASSKEYWIN_*`
+> dumps. The directive grammar is unchanged. If migrating from a 5.UV.5 install,
+> `setx /M RUST_LOG ""` and re-set the value under the new name.
+
+`KEEPASSKEYWIN_LOG_LEVEL` is honoured on both the file route and the stderr
+route. The default when unset is `info`, which captures all the always-on
+breadcrumbs above. Set `KEEPASSKEYWIN_LOG_LEVEL=debug` to additionally see
+lower-level diagnostics — most notably the RP-supplied username hint at
+dispatch time (`[dispatch] extract_prompt_hint -> "..."`), which is otherwise
+gated behind debug-level on PII grounds.
+
+Invalid directives are captured and re-emitted via `tracing::warn!` (5.UV.6+),
+so a typo lands in the file route alongside the rest of the trace rather than
+in a closed stderr handle. Look for `WARN log_filter:
+KEEPASSKEYWIN_LOG_LEVEL: rejected directive "<bad-part>": <error>`.
 
 ```powershell
-setx /M KEEPASSKEYWIN_LOG_FILE        ""
-setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN ""
+setx /M KEEPASSKEYWIN_LOG_LEVEL "debug"                              # everything (verbose)
+setx /M KEEPASSKEYWIN_LOG_LEVEL "info"                               # default (always-on breadcrumbs)
+setx /M KEEPASSKEYWIN_LOG_LEVEL "keepasskeywin_provider=debug,info"  # only this crate at debug, others at info
+```
+
+After setting, propagate the env var (sign out/in, or reinstall MSIX and
+restart KeePass — see Step 6b).
+
+#### `KEEPASSKEYWIN_LOG_PLUGIN_PII` — plugin PII gate (Phase 5.UV.6+)
+
+The plugin's `TraceLogger` writes Info-level breadcrumbs unconditionally to
+`KEEPASSKEYWIN_LOG_FILE_PLUGIN` when set. A small number of breadcrumbs that
+interpolate user-supplied identifiers (RP ID, user name) are tagged
+`LogTier.Pii` and suppressed unless `KEEPASSKEYWIN_LOG_PLUGIN_PII=1` (or
+`true` / `yes`, case-insensitive) is also set. Mirrors the sidecar's PII
+posture: identifying strings only appear in logs when the operator opts in.
+
+```powershell
+setx /M KEEPASSKEYWIN_LOG_PLUGIN_PII "1"
+```
+
+Unset when done:
+
+```powershell
+setx /M KEEPASSKEYWIN_LOG_FILE         ""
+setx /M KEEPASSKEYWIN_LOG_FILE_PLUGIN  ""
+setx /M KEEPASSKEYWIN_LOG_LEVEL        ""
+setx /M KEEPASSKEYWIN_LOG_PLUGIN_PII   ""
 ```
 
 ---
@@ -328,11 +383,23 @@ are Phase 2.2.
 ### Unattended runbook
 
 ```powershell
-# Default — Rust artifacts expected in the repo-local release dir:
+# Default — Rust artifacts expected in the repo-local release dir.
+# Rebuilds + redeploys the .NET plugin DLL AND repacks/installs the sidecar MSIX.
 .\scripts\validate-phase2.ps1
 
 # WSL cross-compile pattern — build on WSL, validate on Windows:
 .\scripts\validate-phase2.ps1 -RustArtifactDir '\\wsl.localhost\<your-distro>\<path-to-your-checkout>\src\KeePassKeyWin.Provider\target\x86_64-pc-windows-msvc\release'
+
+# Iterate on the sidecar only (skip plugin DLL rebuild — assume the deployed plugin is current):
+.\scripts\validate-phase2.ps1 -SkipPlugin
+
+# Override KeePass install path for the plugin deploy step:
+.\scripts\validate-phase2.ps1 -KeePassDir 'C:\Tools\KeePass'
+
+# Build the plugin in Debug instead of the default Release (Release matches
+# production behaviour — Debug.WriteLine is conditionally compiled out of
+# Release builds, which is why TraceLogger's file route exists at all):
+.\scripts\validate-phase2.ps1 -PluginConfiguration Debug
 ```
 
 The WSL path form works because `build-msix.ps1` copies the DLL + EXE into its
@@ -340,10 +407,18 @@ own temp staging dir before invoking `makeappx` — `\\wsl.localhost\…` is jus
 a regular UNC source path to `Copy-Item`. The actual pack runs entirely on
 Windows-local paths.
 
-The orchestrator runs 5 steps: ensure-dev-cert → winver diag → build-msix →
-sign-msix → install-msix. It prompts once for a PFX password (`SecureString`)
-and propagates it to the cert + signing scripts. Pass `-DryRun` for pre-flight
-only.
+The orchestrator runs 6 steps: ensure-dev-cert → winver diag → **build-plugin**
+→ build-msix → sign-msix → install-msix. The plugin step (Step 3/6, added in
+5.UV.6) delegates to `build-plugin.ps1`: rebuilds `KeePassKeyWin.Core.dll` +
+`KeePassKeyWin.Plugin.dll` and copies them into `<KeePassDir>\Plugins\`.
+Default `-PluginConfiguration` is `Release` — change to `Debug` only for
+local-iteration debugging; live-validation expects Release because
+`TraceLogger`'s file route exists precisely to expose breadcrumbs that are
+otherwise compiled out in Release.
+
+The orchestrator prompts once for a PFX password (`SecureString`) and
+propagates it to the cert + signing scripts. Pass `-DryRun` for pre-flight
+only, or `-SkipPlugin` when iterating purely on the sidecar.
 
 ### Expected PASS criteria
 

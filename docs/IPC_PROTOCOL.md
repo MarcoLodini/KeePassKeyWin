@@ -70,9 +70,17 @@ The **first** request on every connection must be `keepasskeywin.hello`. All oth
 - `clientPkgFamilyName` — required. Must equal `KeePassKeyWin.Provider_4fv17arhjxxvg` exactly.
 - `handshakeNonce` — required. 64-char hex nonce from `HKEY_CURRENT_USER\Software\KeePassKeyWin\HandshakeNonce`.
 - `opSignPublicKeyB64` — **required (Phase 5.UV.4+)**. The 72-byte `BCRYPT_ECCKEY_BLOB` for the Windows op-signing
-  public key (P-256), base64-standard encoded (RFC 4648, with padding). The plugin caches this for plugin-side
-  UV signature verification. If absent or malformed, the hello is rejected with `-32602 InvalidParams` and the
-  connection is terminated. The sidecar returns `Err` from `handshake()` rather than sending hello without the field.
+  public key (P-256), base64-standard encoded (RFC 4648, with padding). The plugin caches this in
+  `OpSignPubKeyCache.Current` for plugin-side `pbRequestSignature` verification (5.UV.2+) and v2-tier UV
+  signature verification (5.UV.4+). If absent or malformed, the hello is rejected with `-32602 InvalidParams`
+  and the connection is terminated. The sidecar returns `Err` from `handshake()` rather than sending hello
+  without the field.
+
+  **Pubkey provenance (sidecar side):** the sidecar fetches the key once per process via
+  `WebAuthNPluginGetOperationSigningPublicKey(REFCLSID)` from `webauthn.dll` (see
+  `src/com/request_sig.rs`), caches it in a `OnceLock`, and serialises the cached blob into the hello frame.
+  Cache is per-process; a fresh COM activation re-fetches. The sidecar performs no crypto with this key
+  (the gate is plugin-side since 5.UV.5).
 
 **Validation**:
 1. `clientPkgFamilyName` must equal `KeePassKeyWin.Provider_4fv17arhjxxvg` exactly.
@@ -88,19 +96,28 @@ The **first** request on every connection must be `keepasskeywin.hello`. All oth
 
 **Error responses**: code `-32001` for any validation failure.
 
-## Credential methods
+## Credential methods (plugin-internal helpers)
 
-Documented here as stubs; full parameter and result schemas are added by plugin-core in Task #6.
+These methods predate the raw-CTAP2 dispatch path (`makeCredentialRaw` /
+`getAssertionRaw`). The Windows COM dispatch path does **not** call them in
+production — `webauthn.dll` activates the sidecar via `IPluginAuthenticator`,
+and the sidecar forwards directly to `keepasskeywin.makeCredentialRaw` /
+`keepasskeywin.getAssertionRaw`.
 
-| Method | Direction | Purpose |
-|---|---|---|
-| `keepasskeywin.createPasskey` | sidecar → plugin | Generate + store a new ES256 passkey |
-| `keepasskeywin.listCredentials` | sidecar → plugin | Enumerate credentials for a given rpId |
-| `keepasskeywin.signAssertion` | sidecar → plugin | Sign `authData \|\| clientDataHash` with the stored private key |
-| `keepasskeywin.deleteCredential` | sidecar → plugin | Remove a passkey by credentialId |
-| `keepasskeywin.enumerateForSync` | sidecar → plugin | Return full credential list for Windows Settings sync |
+All five methods require a completed handshake (enforced by `RpcDispatcher`).
+None of them carry `pbRequestSignatureB64` or `uvSignatureB64` — they are not
+exposed to RP-controlled inputs and not gated by the 5.UV trust boundary.
 
-Until plugin-core wires these up, each returns `-32601 MethodNotFound`.
+| Method | Direction | Purpose | Production caller |
+|---|---|---|---|
+| `keepasskeywin.createPasskey` | sidecar → plugin | Generate + store a new ES256 passkey (default-alg helper) | `make-credential` CLI subcommand only |
+| `keepasskeywin.listCredentials` | sidecar → plugin | Enumerate credentials for a given rpId | `make-credential` CLI subcommand only |
+| `keepasskeywin.signAssertion` | sidecar → plugin | Sign `authData \|\| clientDataHash` with a stored private key | `make-credential` CLI subcommand only |
+| `keepasskeywin.deleteCredential` | sidecar → plugin | Remove a passkey by credentialId | None — not exercised by any CLI subcommand or production path |
+| `keepasskeywin.enumerateForSync` | sidecar → plugin | Return the full credential list | None — introduced for a Windows Settings mirror that was not pursued in v1 |
+
+Full parameter / result schemas are documented inline in
+`src/KeePassKeyWin.Core/Ipc/VaultHandler.cs`.
 
 ## Raw CTAP2 methods (post-handshake, dispatch path)
 
@@ -131,8 +148,13 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   `pbRequestSignature`, and in Phase 5.UV.4 re-derives `SHA-256(cbor)` as the
   `buffer_to_sign` used by the v2 UV entrypoint.
 - `uv` — required. Boolean reflecting the result of the Windows Hello UV prompt
-  the sidecar performed before forwarding. Currently trusted as-is by the plugin
-  (Phase 5.UV.4 will re-verify the UV signature plugin-side).
+  the sidecar performed before forwarding. Reflected into the authData flags
+  byte. The plugin does not separately validate `uv=true` against the UV
+  signature path: in v2-tier dispatches the cryptographic verification of
+  `uvSignatureB64` is the integrity check; in v1-tier dispatches the once-per-
+  process Yes/No dialog is the substitute. The boolean is the input to the
+  `UV` flag in authData; the gate that decides whether to proceed runs
+  separately (see `uvBindingTier` below).
 - `pbRequestSignatureB64` — required (Phase 5.UV.2+). Base64-std of the raw
   `WEBAUTHN_PLUGIN_OPERATION_REQUEST.pbRequestSignature` bytes. The plugin verifies
   this against `OpSignPubKeyCache.Current` (populated from the hello handshake)
@@ -157,7 +179,10 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
 
 - `uvBindingTier` — optional (Phase 5.UV.3+); absent / `null` / `""` is treated
   as `"v1"` for pre-5.UV.3 sidecar interoperability. String enum indicating which
-  Windows entrypoint the sidecar resolved for the UV call. The plugin's branch table:
+  Windows entrypoint **actually completed** the UV call (since 5.UV.7 this is the
+  post-fallback entrypoint, not necessarily the one that resolved at load time — a
+  v2 symbol that resolves at load time but returns E_NOTIMPL at call time will report
+  `"v1"` because the fallback to v1 completed the call). The plugin's branch table:
 
   | `uvBindingTier` value           | Plugin action                                                 |
   |---------------------------------|---------------------------------------------------------------|
@@ -166,10 +191,17 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   | Any other value                 | Reject with `-32602 InvalidParams` ("unknown uvBindingTier"). Fail-closed. |
 
   - `"v2_stable"` — `WebAuthNPluginPerformUserVerification2` resolved (stable name;
-    coded for future stabilisation; does not resolve on current 24H2 public headers).
+    coded for future stabilisation; resolves at load time on Win11 24H2 26100.6725+
+    (KB5068861) but returns E_NOTIMPL at call time — the sidecar falls through to v1
+    via the 5.UV.7 call-time fallback and reports `"v1"`).
   - `"v2_experimental"` — `EXPERIMENTAL_WebAuthNPluginPerformUserVerification2`
-    resolved. Tier in production on Windows 11 24H2 build 26100.6725+ (KB5068861).
-  - `"v1"` — only `WebAuthNPluginPerformUserVerification` resolved (v1 fallback).
+    resolved (used on Windows builds where stable v2 is not exported, e.g. older
+    Insider tracks pre-26100.6725).
+  - `"v1"` — `WebAuthNPluginPerformUserVerification` (v1) completed the call.
+    Reported either because only v1 resolved at load time, or because v2 resolved
+    but returned `E_NOTIMPL` at call time and the 5.UV.7 fallback ran v1 in the
+    same dispatch. **This is the post-fallback tier observed in production on
+    Windows 11 24H2 build 26100.6725+ (KB5068861).**
     UV response signature cannot be verified plugin-side. Plugin shows a
     once-per-process confirmation dialog (cached for the plugin-process lifetime).
 
@@ -184,10 +216,11 @@ The sidecar's COM dispatch layer (`com::server::dispatch_operation`) forwards ev
   Honoured on all platforms (the env var lookup is cross-platform; the
   Windows-only effect is on the `LoadLibraryW` symbol that resolves).
 
-**Belt-and-braces**: the sidecar still verifies `pbRequestSignature` server-side
-(`com::request_sig::verify_request_signature`) through Phase 5.UV.2. The
-sidecar-side gate is removed in Phase 5.UV.5 once the plugin-side gate is the
-sole source of truth.
+**Plugin is sole verifier (since 5.UV.2 / 5.UV.5)**: `pbRequestSignature` is verified
+plugin-side (5.UV.2). The sidecar-side gate (`request_sig::verify_request_signature`)
+was removed in 5.UV.5 — the plugin is now the only enforcer for request-signature
+integrity. The sidecar forwards the raw signature bytes as `pbRequestSignatureB64`
+but performs no crypto on them.
 
 **Result shape**: `{ "cbor": "<base64-std of the CTAP2 response>" }` plus
 makeCredential-only metadata fields documented in the C# `VaultHandler`.

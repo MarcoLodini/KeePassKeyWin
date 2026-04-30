@@ -20,10 +20,10 @@
 //! Module is cross-platform (no `#[cfg(windows)]`) so its tests run in CI.
 
 /// Returns `true` when `KEEPASSKEYWIN_FORCE_UV_V1` is set to a truthy value.
-/// Truthy means `"1" | "true" | "yes"` after `trim` + `to_ascii_lowercase`,
-/// matching the existing `KEEPASSKEYWIN_SKIP_REQUEST_SIG_VERIFY` convention
-/// (`request_sig::is_bypass_enabled`). Anything else — including `"0"`,
-/// `"false"`, empty, unset — leaves the production v2-lookup path active.
+/// Truthy means `"1" | "true" | "yes"` after `trim` + `to_ascii_lowercase`
+/// (the `is_truthy` convention used by env-var overrides in this crate).
+/// Anything else — including `"0"`, `"false"`, empty, unset — leaves the
+/// production v2-lookup path active.
 pub fn force_v1_enabled() -> bool {
     match std::env::var("KEEPASSKEYWIN_FORCE_UV_V1") {
         Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),

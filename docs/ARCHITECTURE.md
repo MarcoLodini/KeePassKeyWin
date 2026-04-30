@@ -71,33 +71,158 @@ Methods (sidecar → plugin):
 
 Errors are JSON-RPC error envelopes mapped to CTAP2 status codes inside the sidecar.
 
-### Trust boundary (Phase 5.UV.4 onward)
+### Trust boundaries and signature verification
 
-Two plugin-side verification gates protect every `makeCredentialRaw` / `getAssertionRaw` call:
+The plugin treats the sidecar as **untrusted for security-critical claims**. Concretely:
 
-**Gate 1 — `pbRequestSignature` (Phase 5.UV.2+):** Every dispatch carries
-`pbRequestSignatureB64` — Windows' op-signing ECDSA-P256 signature over
-`SHA-256(pbEncodedRequest)`. The plugin verifies this against `OpSignPubKeyCache.Current`
-(populated from the hello handshake's `opSignPublicKeyB64`). The sidecar still verifies
-the same signature server-side as belt-and-braces through 5.UV.2; the sidecar gate is
-removed in 5.UV.5 once the plugin gate is the sole verifier.
+| Plugin-side gates (cryptographic where possible, user-confirmation otherwise) | What the plugin sources from the sidecar |
+|-----------------------------------------------|----------------------------------|
+| **Cryptographic** — `pbRequestSignature` over `SHA-256(pbEncodedRequest)` (5.UV.2+) | The `pbEncodedRequest` CBOR bytes themselves (input to verification) |
+| **Cryptographic** — UV response signature for v2-tier dispatches (5.UV.4+) | `uvBindingTier` string (controls which branch of the UV gate runs) |
+| **Cryptographic** — sidecar's MSIX package family name + per-launch HKCU nonce (handshake) | Raw `pbRequestSignatureB64` + `uvSignatureB64` bytes (forwarded verbatim, no crypto sidecar-side) |
+| **User-confirmation** — Yes/No dialog for v1-tier dispatches (5.UV.4+; integrity substitute when v1 UV response covers no caller-supplied buffer and crypto verification is not possible) | The Windows Hello UV result (`uv: true|false` flag echoed into authData) |
 
-**Gate 2 — UV response signature (Phase 5.UV.4+):** Every dispatch also carries
-`uvSignatureB64` (the UV response signature) and `uvBindingTier` (which Windows UV
-entrypoint resolved). For v2-tier dispatches (`"v2_stable"` / `"v2_experimental"`),
-the plugin verifies `uvSignatureB64` against `OpSignPubKeyCache.Current` using
-`EcdsaVerifier.VerifyAcceptingEitherFormat` (accepts both IEEE P1363 and DER formats
-for robustness against Windows API format drift). For v1-tier dispatches, plugin-side
-cryptographic verification is not possible (v1 UV signature covers no caller-supplied
-buffer); the plugin shows a once-per-process Yes/No confirmation dialog and caches
-the user's decision for the plugin-process lifetime.
+A request that fails plugin-side verification is rejected with
+`-32602 InvalidParams` *before* any vault read or signature operation. The
+sidecar forwards bytes but performs no crypto on them since 5.UV.5.
 
-`opSignPublicKeyB64` is **required** in the hello handshake since 5.UV.4. Absence or
-malformed base64 rejects the hello with `-32602 InvalidParams`; the sidecar returns
-`Err` from `handshake()` before sending the hello if the key-fetch fails.
+#### Op-sign public key provenance
 
-See `IPC_PROTOCOL.md` for the full field schema. A dedicated trust-model section
-lands in 5.UV.6.
+Both gates verify against the same public key, cached per-plugin-process:
+
+```
+sidecar (per process)                                 plugin (per process)
+───────────────────────────                           ──────────────────────────
+WebAuthNPluginGetOperationSigningPublicKey(REFCLSID)  OpSignPubKeyCache.Current
+   → 72-byte BCRYPT_ECCKEY_BLOB (P-256)                  (set on first hello)
+   → cached in OnceLock (request_sig.rs)                 (read on every dispatch)
+   → distributed plugin-side via the                     (cleared on Terminate)
+     keepasskeywin.hello handshake
+     (opSignPublicKeyB64 field)                       ↑
+                                                      │
+hello frame ────────────────────────────────────────  │
+{                                                     │
+  clientPkgFamilyName,                                │
+  handshakeNonce,        ◀── proves a sidecar with    │
+  opSignPublicKeyB64     ◀── the right MSIX identity  │
+}                            and current registry      │
+                             nonce delivered the key   │
+```
+
+`opSignPublicKeyB64` is **required** in the handshake since 5.UV.4. Absence or
+malformed base64 rejects the hello with `-32602 InvalidParams`; the sidecar
+returns `Err` from `handshake()` rather than sending hello with a missing key.
+The plugin's gate is strictly fail-closed: if `OpSignPubKeyCache.Current` is
+null when a dispatch arrives, the dispatch is rejected with a distinct
+"op-sign pubkey not cached" message — no silent degradation to "trust the
+sidecar's bytes."
+
+The op-signing key is held by `webauthn.dll` per process; forging a signature
+requires local code execution as the current user. The whole gate is a
+defence-in-depth layer, *not* a substitute for the user's vault password.
+
+#### Gate 1 — `pbRequestSignature` (Phase 5.UV.2+)
+
+Every dispatch carries `pbRequestSignatureB64` — Windows' op-signing ECDSA-P256
+signature over `SHA-256(pbEncodedRequest)`. The plugin verifies this against
+`OpSignPubKeyCache.Current` using `EcdsaVerifier.Verify` (raw IEEE P1363).
+Plugin is sole verifier since 5.UV.5 removed the sidecar-side gate.
+
+Order of checks in `VaultHandler.VerifyAndDecodeCbor`:
+
+1. `KEEPASSKEYWIN_SKIP_PLUGIN_SIG_VERIFY=1` (or `true`/`yes`) → short-circuit accept (loud log, **dev only**).
+2. `OpSignPubKeyCache.Current` null → reject "op-sign pubkey not cached".
+3. `pbRequestSignatureB64` missing or malformed base64 → reject.
+4. `EcdsaVerifier.Verify` returns false → reject.
+
+> **Accepted trade-off (5.UV.5):** The pre-5.UV.5 sidecar gate ran *before*
+> `WebAuthNPluginPerformUserVerification`, so a forged or malformed request
+> was rejected before any Windows Hello prompt could fire. Post-5.UV.5, sig
+> verification happens plugin-side after the UV call, so a forged request
+> can elicit a biometric prompt before the plugin rejects it. The vault
+> remains unreachable in either case. Forging the op-sign signature requires
+> local code execution as the user (the per-process op-signing key is held
+> by `webauthn.dll`); at that level of compromise, an unsolicited Hello
+> prompt is not a meaningful escalation. Centralising verification
+> plugin-side eliminated the keypair-desync race documented in pre-5.UV.5
+> diagnostics and removed a latent NCrypt verify bug.
+
+#### Gate 2 — UV response signature (Phase 5.UV.4+)
+
+Every dispatch also carries `uvSignatureB64` (the UV response signature) and
+`uvBindingTier` (which Windows UV entrypoint *completed* the call). For
+v2-tier dispatches (`"v2_stable"` / `"v2_experimental"`), the plugin verifies
+`uvSignatureB64` against `OpSignPubKeyCache.Current` using
+`EcdsaVerifier.VerifyAcceptingEitherFormat` (accepts both IEEE P1363 and DER
+formats for robustness against Windows API format drift). For v1-tier
+dispatches, plugin-side cryptographic verification is not possible (v1 UV
+response covers no caller-supplied buffer); the plugin shows a once-per-process
+Yes/No confirmation dialog and caches the user's decision for the
+plugin-process lifetime. Unknown tier values fail-closed.
+
+> **Note (5.UV.7):** On Windows 11 24H2 build 26100.6725+, all dispatches
+> degrade to v1 at call time because Microsoft's stable
+> `WebAuthNPluginPerformUserVerification2` export is a forward-declared stub
+> returning `E_NOTIMPL`. The sidecar detects this on the first call, falls
+> through to v1 in the same dispatch, and short-circuits the v2 attempt for
+> all subsequent dispatches via a per-process `AtomicBool` cache. The IPC
+> `uvBindingTier` reports the post-fallback truth (`"v1"` after the latch
+> flips), so the plugin's branch table sees v1 and runs the dialog.
+> Plugin-side behaviour is identical to a load-time-resolved v1 dispatch.
+> A future Windows update shipping the actual implementation will be adopted
+> automatically on the next COM activation (cache is per-process, not
+> persistent).
+
+#### Plugin-side observability and PII tier (Phase 5.UV.6+)
+
+The plugin's `TraceLogger` writes opt-in diagnostics to
+`KEEPASSKEYWIN_LOG_FILE_PLUGIN` when that env var points to a writable path.
+Lines that interpolate user-supplied identifiers (RP ID, user name) are
+tagged `LogTier.Pii` and suppressed unless `KEEPASSKEYWIN_LOG_PLUGIN_PII=1`
+is also set, so the default "log file enabled" posture does not capture
+authenticating-user PII. This mirrors the sidecar's posture: PII-bearing
+breadcrumbs are gated behind `KEEPASSKEYWIN_LOG_LEVEL=debug` (renamed in
+5.UV.6 from `RUST_LOG`). See `WINDOWS_VALIDATION.md` § Step 6c.
+
+See `IPC_PROTOCOL.md` for the full field schema and `SECURITY.md` for the
+threat-model framing.
+
+### Sidecar stale-pipe inline retry (Phase 5.UV.8+)
+
+The sidecar caches the plugin pipe handle in process-wide `SHARED_STATE`
+after the first successful `keepasskeywin.hello` handshake — every COM
+activation reuses the same handle so concurrent activations don't fight
+over the plugin's single-instance pipe slot. When the plugin process
+restarts (KeePass close + reopen, KeePass update, lock-cycle reopen,
+crash) while the sidecar is still alive, the cached handle goes stale
+and the next dispatch's pipe write produces `Io(BrokenPipe) → E_FAIL`.
+
+**Contract.** The sidecar's dispatch helper detects stale pipes and
+recovers transparently within the same WebAuthn ceremony — the user does
+not see a generic "Something went wrong" on the first click after a
+KeePass restart. On `Io(BrokenPipe)` or `Io(ConnectionAborted)` from
+`pipe.call`, the helper drops the dead pipe, reconnects + re-runs the
+`keepasskeywin.hello` handshake, and retries the same JSON-RPC method
+with the same params. The UV signature collected earlier in the dispatch
+is reused, so the retry does not trigger a second Windows Hello prompt.
+Exactly one retry per dispatch; if the retry's reconnect or handshake
+also fails, `SHARED_STATE` is cleared so the next COM activation starts
+from scratch and the dispatch returns `E_FAIL` to webauthn.dll.
+
+The recovery applies to all four IPC methods that go over the cached
+pipe: `MakeCredential`, `GetAssertion`, `CancelOperation`, and
+`GetLockStatus`. Cancel discards its result regardless of retry outcome
+(it is a best-effort signal); the other three propagate the retry's
+result through their existing HRESULT-mapping arms. On
+`CancelOperation` the helper also closes a latent self-poisoning case
+where a pre-5.UV.8 stale-pipe error would have been silently stored back
+into the cached state and surfaced on the next real dispatch.
+
+The classifier intentionally treats only `BrokenPipe` and
+`ConnectionAborted` as recoverable; `UnexpectedEof` and `NotConnected`
+fall through to `E_FAIL` for v1, on the cost-asymmetry argument that an
+unrecovered bug is more expensive than an unnecessary retry that
+probably succeeds. Broaden only on live evidence.
 
 ## Storage schema
 

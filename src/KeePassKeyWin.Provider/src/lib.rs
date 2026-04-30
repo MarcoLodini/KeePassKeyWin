@@ -7,6 +7,11 @@
 
 pub mod ctap;
 pub mod ipc;
+// Log-filter directive pre-parser (5.UV.6) — captures per-directive parse
+// warnings into a Vec<String> so they can be re-emitted via tracing::warn!
+// AFTER the subscriber is wired up, instead of via eprintln! to a closed
+// stderr handle. Cross-platform; tests run on Linux CI.
+pub mod log_filter;
 
 // COM module — types always available; implementation Windows-only.
 pub mod com {
@@ -39,6 +44,17 @@ pub mod com {
     // Debug-only override for the PerformUserVerification binding lookup.
     // Cross-platform (tests run on Linux). Read by webauthn_ext::bindings().
     pub mod uv_override;
+    // 5.UV.7 v2→v1 call-time fallback decision helpers + cache mutation.
+    // Cross-platform (tests run on Linux). Imported by webauthn_ext::perform_user_verification_2.
+    pub mod uv_fallback;
+    // 5.UV.8 stale-pipe classifier + generic SHARED_STATE slot-clearing helper.
+    // Cross-platform (tests run on Linux). Imported by server::take_call_with_retry
+    // and exe_server::clear_shared_state.
+    pub mod classify_rpc_error;
+    // 5.UV.9 faithful registry-error enum + pure LSTATUS→RegReadError mapper.
+    // Cross-platform (tests run on Linux). Imported by exe_server::read_handshake_nonce
+    // and exe_server::connect_and_handshake.
+    pub mod reg_read_error;
     // Non-Windows stub so tests that reference com::server still compile.
     #[cfg(not(windows))]
     pub mod server;
