@@ -73,16 +73,13 @@ people upgrading mid-development.
 - **Release workflow and code-signing pipeline** (Phase 6). New
   `.github/workflows/release.yml` triggered on `v*` tag pushes: builds the
   plugin DLL (net48 Release on Windows runner), builds the sidecar MSIX
-  (native `cargo build` + `makeappx`), submits the unsigned MSIX to
-  **SignPath Foundation** (free OSS Authenticode signing) for approval,
-  downloads the signed MSIX, then creates a GitHub Release with both
-  artifacts. SignPath signing is gated on `v*` tags only; the workflow
-  pauses for manual approval in the SignPath dashboard. See
+  (native `cargo build` + `makeappx`), signs the MSIX with a self-signed
+  certificate, then creates a GitHub Release with both
+  artifacts. Signing is automated via CI secrets (`DEV_CERTIFICATE` and
+  `DEV_CERTIFICATE_PASSWORD`). See
   `docs/DISTRIBUTION.md` for the full setup guide and release instructions.
-- `.signpath/artifact-configurations/default.xml` — SignPath artifact
-  configuration declaring MSIX as the signing format.
 - `docs/DISTRIBUTION.md` — distribution architecture documentation covering
-  the two-artifact model, SignPath Foundation setup, user installation
+  the two-artifact model, self-signed certificate setup, user installation
   instructions, release process (maintainer), and GPG signature workflow.
 
 - **CI: Windows-target compile + clippy gates** (Phase 5.UV.9.7, also
