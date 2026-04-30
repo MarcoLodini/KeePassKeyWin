@@ -55,3 +55,6 @@ Thumbs.db
 
 # Trademark research screenshots (not shipped)
 uspto-*.png
+
+# OpenCode working notes (private, gitignored)
+/.opencode/memory/

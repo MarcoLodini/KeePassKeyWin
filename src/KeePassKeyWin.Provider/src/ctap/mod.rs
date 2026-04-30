@@ -1,12 +1,10 @@
-//! CTAP2 request/response types and conversion helpers.
+//! CTAP2 request/response types for the plugin JSON-RPC wire format.
 //!
-//! We lean on `passkey-types` for the canonical WebAuthn/CTAP2 structures rather
-//! than reimplementing them. This module provides thin wrappers and conversion
-//! helpers between the CTAP2 world and the plugin's JSON-RPC wire format.
+//! Contains the serialisable structs used for keepasskeywin.* RPC calls, plus
+//! the `rp_id_hash` helper. The heavy CTAP2 parsing happens in the C# plugin
+//! (VaultHandler) or the Windows-only COM dispatch (com::server); this module
+//! only covers the types the CLI sidecar needs to construct and consume.
 
-#![allow(dead_code)]
-
-use passkey_types::ctap2::make_credential::Request as MakeCredentialRequest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -94,25 +92,6 @@ pub fn rp_id_hash(rp_id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(rp_id.as_bytes());
     hasher.finalize().into()
-}
-
-// ── Conversion: MakeCredentialRequest → CreatePasskeyParams ──────────────────
-
-/// Converts a CTAP2 MakeCredential request into the params expected by the plugin.
-///
-/// `user_handle` is base64-encoded from the CTAP2 user.id bytes.
-pub fn make_credential_to_rpc(req: &MakeCredentialRequest) -> CreatePasskeyParams {
-    use base64::Engine;
-    let user_handle = base64::engine::general_purpose::STANDARD
-        .encode(req.user.id.as_slice());
-
-    CreatePasskeyParams {
-        rp_id: req.rp.id.clone(),
-        rp_name: req.rp.name.clone().unwrap_or_else(|| req.rp.id.clone()),
-        user_handle,
-        user_name: req.user.name.clone(),
-        user_display_name: req.user.display_name.clone(),
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

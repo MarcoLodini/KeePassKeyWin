@@ -68,8 +68,8 @@ struct RpcRequest<'a, P: Serialize> {
 
 #[derive(Deserialize)]
 struct RpcResponse {
-    #[allow(dead_code)]
-    id: serde_json::Value,
+    #[serde(rename = "id")]
+    _id: serde_json::Value,
     result: Option<serde_json::Value>,
     error: Option<RpcErrorObj>,
 }
