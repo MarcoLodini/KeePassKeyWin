@@ -41,7 +41,7 @@ jobs:
           Compress-Archive -Path "$out\*" -DestinationPath "KeePassKeyWin.Plugin.zip" -CompressionLevel Optimal
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: KeePassKeyWin.Plugin
           path: KeePassKeyWin.Plugin.zip
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload unsigned MSIX
         id: upload-unsigned
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: KeePassKeyWin.Provider-unsigned
           path: out\KeePassKeyWin.Provider.msix
@@ -99,7 +99,7 @@ jobs:
           }
 
       - name: Upload MSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: KeePassKeyWin.Provider-signed
           path: out\KeePassKeyWin.Provider.msix
@@ -112,13 +112,13 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download plugin artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: KeePassKeyWin.Plugin
           path: release-assets
 
       - name: Download signed MSIX artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: KeePassKeyWin.Provider-signed
           path: release-assets
